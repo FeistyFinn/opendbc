@@ -64,6 +64,8 @@ class CarStateExt:
       elif speed_units == "MPH":
         ret_sp.speedLimit = speed_limit * CV.MPH_TO_MS
 
+    ret.genericToggle = cp_party.vl["UI_warning"]["scrollWheelPressed"] != 0
+
   def update_coop_steering_sp(self, ret_sp: structs.CarStateSP) -> None:
     """Log the cooperative-steering inertia-FF internals to CarStateSP for telemetry. The FF is
     shadow-only: always computed + logged while coop steering is active, never applied to steering.
