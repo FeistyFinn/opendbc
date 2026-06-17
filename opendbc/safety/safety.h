@@ -46,6 +46,8 @@ bool controls_allowed = false;
 bool relay_malfunction = false;
 bool gas_pressed = false;
 bool gas_pressed_prev = false;
+// brand opt-in (Tesla cooperative driving): allow longitudinal actuation while the gas pedal is pressed
+bool longitudinal_allowed_on_gas = false;
 bool brake_pressed = false;
 bool brake_pressed_prev = false;
 bool regen_braking = false;
@@ -434,6 +436,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   relay_malfunction = false;
   gas_pressed = false;
   gas_pressed_prev = false;
+  longitudinal_allowed_on_gas = false;
   brake_pressed = false;
   brake_pressed_prev = false;
   regen_braking = false;

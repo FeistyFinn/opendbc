@@ -260,6 +260,7 @@ extern bool controls_allowed;
 extern bool relay_malfunction;
 extern bool gas_pressed;
 extern bool gas_pressed_prev;
+extern bool longitudinal_allowed_on_gas;
 extern bool brake_pressed;
 extern bool brake_pressed_prev;
 extern bool regen_braking;

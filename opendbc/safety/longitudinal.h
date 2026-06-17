@@ -1,7 +1,8 @@
 #include "opendbc/safety/declarations.h"
 
 bool get_longitudinal_allowed(void) {
-  return controls_allowed;
+  // gas press blocks longitudinal actuation, unless the current safety mode opts in (e.g. Tesla cooperative driving)
+  return controls_allowed && (!gas_pressed_prev || longitudinal_allowed_on_gas);
 }
 
 // Safety checks for longitudinal actuation
