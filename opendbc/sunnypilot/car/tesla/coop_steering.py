@@ -104,7 +104,6 @@ class CoopSteeringCarController:
     self.angle_override = 0
     self.resume_rate_limiter_delta = SteerRateLimiter()
     self.resume_rate_limiter = SteerRateLimiter()
-    self.debug_angle_desired_limited = 0
 
   def reset_override_state(self, apply_angle: float) -> None:
     self.apply_angle_last = apply_angle
@@ -175,8 +174,6 @@ class CoopSteeringCarController:
     if not lat_active or not angle_coop_enabled:
       self.reset_override_state(apply_angle)
       return CoopSteeringDataSP(apply_angle, lat_active)
-
-    self.debug_angle_desired_limited = apply_angle #! debug
 
     apply_angle_delta = apply_angle - self.apply_angle_last
     self.apply_angle_last = apply_angle
