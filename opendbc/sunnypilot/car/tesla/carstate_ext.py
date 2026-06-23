@@ -21,6 +21,7 @@ class CarStateExt:
     self.CP_SP = CP_SP
 
     self.mads_gesture_armed = True
+    self.coop_steering_debug = None  # carcontroller stashes its coop_steer here each frame for telemetry
 
     # Configured MADS screen-button finger count; 0 == MadsScreenButtonType.OFF (no screen gesture at
     # all). Mirrors panda's tesla_mads_screen_button_fingers, and like it is matched against the noisy
@@ -72,6 +73,26 @@ class CarStateExt:
         ret_sp.speedLimit = speed_limit * CV.KPH_TO_MS
       elif speed_units == "MPH":
         ret_sp.speedLimit = speed_limit * CV.MPH_TO_MS
+
+  def update_coop_steering_sp(self, ret_sp: structs.CarStateSP) -> None:
+    """Log the cooperative-steering inertia-FF internals (incl. shadow mode) to CarStateSP for
+    telemetry. Sourced from the carcontroller's coop_steer instance, which stashes itself on this
+    CarState each frame (1-frame lag). Defensive: telemetry must never break carstate."""
+    coop_steer = self.coop_steering_debug
+    if coop_steer is None:
+      return
+    try:
+      sp = ret_sp.coopSteering
+      sp.coopActive = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING)
+      sp.inertiaCompActive = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_COMP)
+      sp.shadowActive = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW)
+      sp.alphaFilt = float(coop_steer.alpha_filt_last)
+      sp.tauInertia = float(coop_steer.tau_inertia_last)
+      sp.tauIntent = float(coop_steer.tau_intent_last)
+      sp.inertiaJUsed = float(coop_steer.inertia_j_used)
+      sp.angleOverride = float(coop_steer.angle_override)
+    except Exception:  # telemetry must never break carstate
+      pass
 
   @staticmethod
   def get_parser(CP: structs.CarParams, CP_SP: structs.CarParamsSP) -> dict[StrEnum, CANParser]:
