@@ -16,6 +16,7 @@ from opendbc.sunnypilot.car.tesla.coop_steering import (
   apply_bounds,
   apply_deadzone,
   get_steer_from_lat_accel,
+  STEER_INERTIA_TORQUE_LIMIT,
   STEER_OVERRIDE_MIN_TORQUE,
 )
 
@@ -24,18 +25,24 @@ VM = VehicleModel(get_safety_CP())
 STEER_ANGLE_MAX = CoopSteeringCarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX
 
 
-def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0):
+def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0, steering_rate_deg=0.0):
   out = structs.CarState()
   out.vEgo = v_ego
   out.vEgoRaw = v_ego
   out.steeringAngleDeg = steering_angle
   out.steeringTorque = steering_torque
+  out.steeringRateDeg = steering_rate_deg
   return SimpleNamespace(out=out)
 
 
-def _cp_sp(coop=True):
+def _cp_sp(coop=True, inertia_comp=True):
   cp_sp = structs.CarParamsSP()
-  cp_sp.flags = TeslaFlagsSP.COOP_STEERING.value if coop else 0
+  flags = 0
+  if coop:
+    flags |= TeslaFlagsSP.COOP_STEERING.value
+    if inertia_comp:
+      flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value
+  cp_sp.flags = flags
   return cp_sp
 
 
@@ -135,3 +142,91 @@ def test_release_resets_override_to_input_angle():
   out = c.update(12.0, False, cp_sp, _cs(steering_torque=0.0, steering_angle=12.0), VM)
   assert c.angle_override == 0
   assert out.steeringAngleDeg == 12.0  # returns commanded angle, no leftover override
+
+
+# --- inertia compensation ---
+
+def test_inertia_no_false_override_from_rotation_alone():
+  # Wheel is rotating (large alpha from a rate ramp) but driver is not engaging:
+  # the compensation must not manufacture a phantom intent torque that grows the override.
+  # Guard: with |driver_torque| <= deadzone, tau_inertia is forced to 0.
+  c = CoopSteeringCarController()
+  cp_sp = _cp_sp(coop=True, inertia_comp=True)
+  rate = 0.0
+  for _ in range(50):
+    c.update(0.0, True, cp_sp, _cs(steering_torque=0.0, steering_rate_deg=rate), VM)
+    rate += 2.0  # 100 deg/s^2 constant acceleration -> non-trivial raw alpha
+  assert abs(c.tau_inertia_last) < 1e-9
+  assert abs(c.angle_override) < 1e-9
+
+
+def test_inertia_noop_at_steady_state():
+  # Above-deadzone driver torque with zero wheel rotation: alpha settles to 0, tau_inertia -> 0,
+  # behavior matches the pre-compensation baseline (sub-toggle off).
+  c_on = CoopSteeringCarController()
+  c_off = CoopSteeringCarController()
+  _settle(c_on, _cp_sp(coop=True, inertia_comp=True), _cs(steering_torque=2.0))
+  _settle(c_off, _cp_sp(coop=True, inertia_comp=False), _cs(steering_torque=2.0))
+  assert abs(c_on.tau_inertia_last) < 1e-9
+  assert abs(c_on.angle_override - c_off.angle_override) < 1e-6
+
+
+def test_inertia_attenuates_response_during_torque_step_with_rotation():
+  # Driver torque above deadzone with wheel accelerating in the same direction (alpha > 0):
+  # tau_inertia > 0 -> driver_torque_intent = tau - J*alpha < tau -> smaller target ->
+  # angle_override grows more slowly than with compensation off.
+  def run(cp_sp):
+    c = CoopSteeringCarController()
+    rate = 0.0
+    for _ in range(20):
+      c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
+      rate += 5.0  # +250 deg/s^2 (~4.4 rad/s^2) sustained alpha
+    return c.angle_override
+
+  with_comp = run(_cp_sp(coop=True, inertia_comp=True))
+  without_comp = run(_cp_sp(coop=True, inertia_comp=False))
+  assert with_comp > 0.0
+  assert without_comp > 0.0
+  assert with_comp < without_comp
+
+
+def test_inertia_engagement_no_spike():
+  # Pre-engage the wheel is already rotating fast. After engaging, the differentiator must not
+  # see a spurious (current_rate - 0) / dt spike on the first frame -- reset_override_state seeds
+  # prev_steering_rate_deg with the current rate and re-arms the filter to snap on first sample.
+  c = CoopSteeringCarController()
+  cp_sp = _cp_sp(coop=True, inertia_comp=True)
+  c.update(0.0, False, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=20.0), VM)
+  c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=20.0), VM)
+  # No differentiator spike: tau_inertia is well below the clamp on the engagement frame.
+  assert abs(c.tau_inertia_last) < 0.1
+
+
+def test_inertia_clamp_protects_against_runaway_alpha():
+  # Extreme alpha (stale-then-jump pattern) must clamp tau_inertia at STEER_INERTIA_TORQUE_LIMIT
+  # so a sensor glitch can't drive the override past sane bounds.
+  c = CoopSteeringCarController()
+  cp_sp = _cp_sp(coop=True, inertia_comp=True)
+  # Drive the filter into a steady state first so it is initialized
+  for _ in range(5):
+    c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=0.0), VM)
+  # Jump the rate: huge alpha
+  c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=500.0), VM)
+  assert abs(c.tau_inertia_last) <= STEER_INERTIA_TORQUE_LIMIT + 1e-9
+
+
+def test_inertia_sub_toggle_off_matches_baseline():
+  # Master COOP_STEERING on, COOP_STEERING_INERTIA_COMP off: even with nonzero rate signal,
+  # no compensation runs (tau_inertia stays 0). Override behavior matches a run where the
+  # rate signal is zero with the sub-flag on.
+  c_off = CoopSteeringCarController()
+  c_ref = CoopSteeringCarController()
+  rate = 0.0
+  for _ in range(80):
+    c_off.update(0.0, True, _cp_sp(coop=True, inertia_comp=False),
+                 _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
+    c_ref.update(0.0, True, _cp_sp(coop=True, inertia_comp=True),
+                 _cs(steering_torque=2.0, steering_rate_deg=0.0), VM)
+    rate += 5.0
+  assert c_off.tau_inertia_last == 0.0
+  assert abs(c_off.angle_override - c_ref.angle_override) < 1e-6
