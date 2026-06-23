@@ -37,13 +37,15 @@ def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0, steering_rate_deg=0.
   return SimpleNamespace(out=out)
 
 
-def _cp_sp(coop=True, inertia_comp=True, inertia_j=0.0):
+def _cp_sp(coop=True, inertia_comp=True, inertia_j=0.0, shadow=False):
   cp_sp = structs.CarParamsSP()
   flags = 0
   if coop:
     flags |= TeslaFlagsSP.COOP_STEERING.value
     if inertia_comp:
       flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value
+      if shadow:
+        flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW.value
   cp_sp.flags = flags
   cp_sp.teslaCoopSteeringInertiaJ = inertia_j  # 0.0 -> module default
   return cp_sp
@@ -271,3 +273,30 @@ def test_inertia_j_param_clamped_to_safe_range():
   c_neg.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=-1.0),
                _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
   assert c_neg.inertia_j_used == 0.0
+
+
+# --- inertia shadow mode (COOP_STEERING_INERTIA_SHADOW: compute + log, do not apply) ---
+
+def test_inertia_shadow_applies_baseline_but_still_logs_ff():
+  # Shadow runs the FF (so alpha/tau_inertia are computed + logged for analysis) but applies the
+  # baseline override -- the commute steering must be identical to inertia-comp-off, while live comp
+  # (which subtracts tau_inertia) attenuates the override.
+  def run(cp_sp):
+    c = CoopSteeringCarController()
+    rate = 0.0
+    for _ in range(20):
+      c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
+      rate += 5.0  # sustained alpha so the FF is non-trivial
+    return c
+
+  shadow = run(_cp_sp(coop=True, inertia_comp=True, shadow=True))
+  baseline = run(_cp_sp(coop=True, inertia_comp=False))
+  live = run(_cp_sp(coop=True, inertia_comp=True))
+
+  # applied override is the baseline (shadow does not change steering)
+  assert abs(shadow.angle_override - baseline.angle_override) < 1e-6
+  # but the FF was actually computed + logged
+  assert abs(shadow.tau_inertia_last) > 0.0
+  assert abs(shadow.alpha_filt_last) > 0.0
+  # and live comp (which applies) produces a smaller override than shadow/baseline
+  assert 0.0 < live.angle_override < shadow.angle_override

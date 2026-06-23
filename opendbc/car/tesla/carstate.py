@@ -171,6 +171,7 @@ class CarState(CarStateBase, CarStateExt):
     self.das_control = copy.copy(cp_ap_party.vl["DAS_control"])
 
     CarStateExt.update(self, ret, ret_sp, can_parsers)
+    CarStateExt.update_coop_steering_sp(self, ret_sp)
 
     return ret, ret_sp
 

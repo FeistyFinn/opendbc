@@ -171,3 +171,15 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+  coopSteering: 'CarStateSP.CoopSteering' = field(default_factory=lambda: CarStateSP.CoopSteering())
+
+  @auto_dataclass
+  class CoopSteering:
+    coopActive: bool = auto_field()
+    inertiaCompActive: bool = auto_field()
+    shadowActive: bool = auto_field()
+    alphaFilt: float = auto_field()
+    tauInertia: float = auto_field()
+    tauIntent: float = auto_field()
+    inertiaJUsed: float = auto_field()
+    angleOverride: float = auto_field()

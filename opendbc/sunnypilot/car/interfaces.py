@@ -115,6 +115,8 @@ def _initialize_coop_steering(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
       inertia_comp = int(params_dict.get("TeslaCoopSteeringInertiaComp", 1)) == 1
       if inertia_comp:
         CP_SP.flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value
+        if int(params_dict.get("TeslaCoopSteeringInertiaShadow", 0)) == 1:
+          CP_SP.flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW.value
 
 
 def _initialize_tesla_infotainment_gesture(CP: structs.CarParams, CP_SP: structs.CarParamsSP,

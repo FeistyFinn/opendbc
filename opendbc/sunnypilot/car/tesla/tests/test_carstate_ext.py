@@ -4,6 +4,8 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+from types import SimpleNamespace
+
 from opendbc.car import structs
 from opendbc.sunnypilot.car.tesla.carstate_ext import CarStateExt
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
@@ -81,3 +83,31 @@ def test_lower_threshold_still_single_toggle():
   # with N=4 a clean 4-finger gesture is one toggle and 3 fingers never fires
   evs = _feed(_ext(4), [0, 3, 0, 4, 5, 4, 0])
   assert _lkas_presses(evs) == 1
+
+
+# --- coop-steering FF telemetry (CarStateSP.coopSteering) ---
+
+def test_coop_steering_telemetry_populates_carstatesp():
+  # carstate_ext logs the carcontroller's coop_steer internals to CarStateSP.coopSteering for
+  # shadow-mode data-gathering; must be best-effort (never raise).
+  ext = _ext(5)
+  ext.CP_SP.flags |= (TeslaFlagsSP.COOP_STEERING | TeslaFlagsSP.COOP_STEERING_INERTIA_COMP
+                      | TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW).value
+
+  # before the carcontroller stashes anything: no-op, no crash
+  ret_sp = structs.CarStateSP()
+  ext.update_coop_steering_sp(ret_sp)
+  assert ret_sp.coopSteering.alphaFilt == 0.0
+
+  # carcontroller stashes its coop_steer (faked)
+  ext.coop_steering_debug = SimpleNamespace(alpha_filt_last=3.2, tau_inertia_last=0.25,
+                                            tau_intent_last=1.75, inertia_j_used=0.08, angle_override=4.1)
+  ret_sp = structs.CarStateSP()
+  ext.update_coop_steering_sp(ret_sp)
+  c = ret_sp.coopSteering
+  assert c.coopActive and c.inertiaCompActive and c.shadowActive
+  assert abs(c.alphaFilt - 3.2) < 1e-6 and abs(c.inertiaJUsed - 0.08) < 1e-6 and abs(c.angleOverride - 4.1) < 1e-6
+
+  # a malformed debug object must never raise (telemetry is best-effort)
+  ext.coop_steering_debug = SimpleNamespace()  # missing attrs
+  ext.update_coop_steering_sp(structs.CarStateSP())

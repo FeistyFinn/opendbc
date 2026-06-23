@@ -13,6 +13,7 @@ class TeslaFlagsSP(IntFlag):
   COOP_STEERING_INERTIA_COMP = 4  # Inertia FF inside coop steering
   MADS_TOGGLE_FINGERS_4 = 8  # Two-bit encoding of MADS-toggle finger count (with _5):
   MADS_TOGGLE_FINGERS_5 = 16  #   00 -> 3 fingers (legacy), 01 -> 4, 10 -> 5
+  COOP_STEERING_INERTIA_SHADOW = 32  # Inertia FF computes + logs but does NOT apply (shadow data-gathering)
 
 
 class TeslaSafetyFlagsSP:
