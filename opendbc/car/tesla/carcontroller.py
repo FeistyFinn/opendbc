@@ -30,6 +30,7 @@ class CarController(CarControllerBase):
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
     can_sends = []
+    CS.coop_steering_debug = self.coop_steer  # expose FF internals to carstate telemetry (CarStateSP.coopSteering)
 
     # Wait until the override condition clears before steering
     # Canceling is done on rising edge of CS.out.steeringDisengage and is handled generically with CC.cruiseControl.cancel
