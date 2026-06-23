@@ -66,6 +66,7 @@ class CarParamsSP:
   pcmCruiseSpeed: bool = auto_field()
   intelligentCruiseButtonManagementAvailable: bool = auto_field()
   enableGasInterceptor: bool = auto_field()
+  teslaCoopSteeringInertiaJ: float = auto_field()
 
   neuralNetworkLateralControl: 'CarParamsSP.NeuralNetworkLateralControl' = field(default_factory=lambda: CarParamsSP.NeuralNetworkLateralControl())
 

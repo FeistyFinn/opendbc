@@ -33,7 +33,8 @@ class CoopSteeringCarControllerParams(CarControllerParams):
 # Sign convention from carstate.py: steeringTorque = -EPAS3S_torsionBarTorque and
 # steeringRateDeg = -SCCM_steeringAngleSpeed, so they share the same sign convention
 # (positive = wheel turning right / driver applying right torque), and the inertia term subtracts.
-STEER_INERTIA_J = 0.08 # kg*m^2 (Nm per rad/s^2)
+STEER_INERTIA_J = 0.08 # kg*m^2 (Nm per rad/s^2) - default; per-vehicle override via the TeslaCoopSteeringInertiaJ param
+STEER_INERTIA_J_MAX = 0.15 # kg*m^2 - hard safety clamp on the field-tunable J (literature upper bound)
 STEER_ALPHA_FILTER_RC = 0.04 # s
 STEER_OVERRIDE_MIN_TORQUE = 0.5 # Nm - based on typical steering bias + noise - used for the deadzone
 STEER_OVERRIDE_MAX_TORQUE = 2.5 # Nm - typical torque before EPS disengages due to hands_on_level=3
@@ -119,6 +120,8 @@ class CoopSteeringCarController:
     self.alpha_filter = FirstOrderFilter(0.0, STEER_ALPHA_FILTER_RC, DT_LAT_CTRL, initialized=False)
     self.tau_inertia_last = 0.0
     self.tau_intent_last = 0.0
+    self.alpha_filt_last = 0.0
+    self.inertia_j_used = 0.0
 
   def reset_override_state(self, apply_angle: float, current_steering_rate_deg: float = 0.0) -> None:
     self.apply_angle_last = apply_angle
@@ -129,9 +132,11 @@ class CoopSteeringCarController:
     self.alpha_filter.initialized = False
     self.tau_inertia_last = 0.0
     self.tau_intent_last = 0.0
+    self.alpha_filt_last = 0.0
+    self.inertia_j_used = 0.0
 
   def update_override_angle(self, apply_angle_delta: float, driver_torque: float,
-                            steering_rate_deg: float, inertia_comp_enabled: bool,
+                            steering_rate_deg: float, inertia_comp_enabled: bool, inertia_j: float,
                             vEgo: float, VM: VehicleModel) -> float:
     """
     Update angle_override toward the driver torque target subject to torque-based rate limits.
@@ -142,16 +147,20 @@ class CoopSteeringCarController:
     if inertia_comp_enabled:
       alpha_raw_deg_per_s2 = (steering_rate_deg - self.prev_steering_rate_deg) / DT_LAT_CTRL
       alpha_filt_rad_per_s2 = math.radians(self.alpha_filter.update(alpha_raw_deg_per_s2))
-      tau_inertia = apply_bounds(STEER_INERTIA_J * alpha_filt_rad_per_s2, STEER_INERTIA_TORQUE_LIMIT)
+      tau_inertia = apply_bounds(inertia_j * alpha_filt_rad_per_s2, STEER_INERTIA_TORQUE_LIMIT)
       # Only apply the FF when the driver is actually engaging the wheel. Without this guard,
       # openpilot-driven wheel rotation (no driver torque, but nonzero alpha) would manufacture
       # a phantom negative intent torque outside the deadzone and grow a spurious override.
       if abs(driver_torque) <= STEER_OVERRIDE_MIN_TORQUE:
         tau_inertia = 0.0
+      self.alpha_filt_last = alpha_filt_rad_per_s2
+      self.inertia_j_used = inertia_j
     else:
       self.alpha_filter.x = 0.0
       self.alpha_filter.initialized = False
       tau_inertia = 0.0
+      self.alpha_filt_last = 0.0
+      self.inertia_j_used = 0.0
     self.prev_steering_rate_deg = steering_rate_deg
     driver_torque_intent = driver_torque - tau_inertia
     self.tau_inertia_last = tau_inertia
@@ -210,6 +219,8 @@ class CoopSteeringCarController:
   def update(self, apply_angle, lat_active, CP_SP: structs.CarParamsSP, CS: structs.CarState, VM: VehicleModel) -> CoopSteeringDataSP:
     angle_coop_enabled = CP_SP.flags & TeslaFlagsSP.COOP_STEERING.value
     inertia_comp_enabled = bool(CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value)
+    # per-vehicle tunable J (param), hard-clamped so a bad value can never blow up the FF; 0 -> default
+    inertia_j = float(np.clip(CP_SP.teslaCoopSteeringInertiaJ or STEER_INERTIA_J, 0.0, STEER_INERTIA_J_MAX))
 
     # avoid sudden rotation on engagement
     apply_angle = self.resume_steer_desired_rate_limit(lat_active, apply_angle)
@@ -221,7 +232,7 @@ class CoopSteeringCarController:
     apply_angle_delta = apply_angle - self.apply_angle_last
     self.apply_angle_last = apply_angle
     apply_angle += self.update_override_angle(apply_angle_delta, CS.out.steeringTorque,
-                                              CS.out.steeringRateDeg, inertia_comp_enabled,
+                                              CS.out.steeringRateDeg, inertia_comp_enabled, inertia_j,
                                               CS.out.vEgo, VM)
 
     # final rate limit - matching panda safety
