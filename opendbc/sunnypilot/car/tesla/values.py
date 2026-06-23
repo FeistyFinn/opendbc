@@ -9,7 +9,8 @@ from enum import IntFlag
 
 class TeslaFlagsSP(IntFlag):
   HAS_VEHICLE_BUS = 1  # Infotainment multi-touch signal is present on the VEHICLE bus with the deprecated Tesla harness installed
-  COOP_STEERING = 2  # Coop steering
+  COOP_STEERING = 2  # Coop steering (master)
+  COOP_STEERING_INERTIA_COMP = 4  # Inertia FF inside coop steering
   MADS_TOGGLE_FINGERS_4 = 8  # Two-bit encoding of MADS-toggle finger count (with _5):
   MADS_TOGGLE_FINGERS_5 = 16  #   00 -> 3 fingers (legacy), 01 -> 4, 10 -> 5
 
