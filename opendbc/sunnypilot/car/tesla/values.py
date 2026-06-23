@@ -13,6 +13,7 @@ class TeslaFlagsSP(IntFlag):
   MADS_SCREEN_BUTTON_3_FINGER = 4
   MADS_SCREEN_BUTTON_4_FINGER = 8
   MADS_SCREEN_BUTTON_5_FINGER = 16
+  COOP_STEERING_INERTIA_COMP = 32  # Inertia FF inside coop steering
 
 
 class MadsScreenButtonType:
