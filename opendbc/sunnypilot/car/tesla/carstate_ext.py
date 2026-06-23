@@ -20,17 +20,23 @@ class CarStateExt:
     self.CP = CP
     self.CP_SP = CP_SP
 
-    self.infotainment_3_finger_press = 0
+    self.infotainment_touch_points_active = 0
+    if CP_SP.flags & TeslaFlagsSP.MADS_TOGGLE_FINGERS_5:
+      self.mads_toggle_fingers = 5
+    elif CP_SP.flags & TeslaFlagsSP.MADS_TOGGLE_FINGERS_4:
+      self.mads_toggle_fingers = 4
+    else:
+      self.mads_toggle_fingers = 3
 
   def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
     if self.CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
       cp_adas = can_parsers[Bus.adas]
 
-      prev_infotainment_3_finger_press = self.infotainment_3_finger_press
-      self.infotainment_3_finger_press = int(cp_adas.vl["UI_status2"]["UI_activeTouchPoints"])
+      prev_touch_points = self.infotainment_touch_points_active
+      self.infotainment_touch_points_active = int(cp_adas.vl["UI_status2"]["UI_activeTouchPoints"])
 
-      ret.buttonEvents = [*create_button_events(self.infotainment_3_finger_press, prev_infotainment_3_finger_press,
-                                                {3: ButtonType.lkas})]
+      ret.buttonEvents = [*create_button_events(self.infotainment_touch_points_active, prev_touch_points,
+                                                {self.mads_toggle_fingers: ButtonType.lkas})]
 
     cp_party = can_parsers[Bus.party]
     cp_ap_party = can_parsers[Bus.ap_party]
