@@ -16,6 +16,8 @@ from opendbc.sunnypilot.car.tesla.coop_steering import (
   apply_bounds,
   apply_deadzone,
   get_steer_from_lat_accel,
+  STEER_INERTIA_J,
+  STEER_INERTIA_J_MAX,
   STEER_INERTIA_TORQUE_LIMIT,
   STEER_OVERRIDE_MIN_TORQUE,
 )
@@ -35,7 +37,7 @@ def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0, steering_rate_deg=0.
   return SimpleNamespace(out=out)
 
 
-def _cp_sp(coop=True, inertia_comp=True):
+def _cp_sp(coop=True, inertia_comp=True, inertia_j=0.0):
   cp_sp = structs.CarParamsSP()
   flags = 0
   if coop:
@@ -43,6 +45,7 @@ def _cp_sp(coop=True, inertia_comp=True):
     if inertia_comp:
       flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value
   cp_sp.flags = flags
+  cp_sp.teslaCoopSteeringInertiaJ = inertia_j  # 0.0 -> module default
   return cp_sp
 
 
@@ -230,3 +233,41 @@ def test_inertia_sub_toggle_off_matches_baseline():
     rate += 5.0
   assert c_off.tau_inertia_last == 0.0
   assert abs(c_off.angle_override - c_ref.angle_override) < 1e-6
+
+
+# --- field-tunable inertia J (TeslaCoopSteeringInertiaJ param) ---
+
+def test_inertia_j_param_default_when_unset():
+  # J param unset (0.0) -> the module default STEER_INERTIA_J is used.
+  c = CoopSteeringCarController()
+  c.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=0.0),
+           _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
+  assert abs(c.inertia_j_used - STEER_INERTIA_J) < 1e-9
+
+
+def test_inertia_j_param_overrides_default():
+  # Larger J subtracts more inertial torque -> smaller override than a smaller J.
+  def run(j):
+    c = CoopSteeringCarController()
+    rate = 0.0
+    for _ in range(20):
+      c.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=j),
+               _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
+      rate += 5.0
+    return c.angle_override, c.inertia_j_used
+  small_ovr, small_j = run(0.02)
+  large_ovr, large_j = run(0.15)
+  assert abs(small_j - 0.02) < 1e-9 and abs(large_j - 0.15) < 1e-9
+  assert 0.0 < large_ovr < small_ovr
+
+
+def test_inertia_j_param_clamped_to_safe_range():
+  # Out-of-range param J is hard-clamped so a bad value can never blow up the FF.
+  c_hi = CoopSteeringCarController()
+  c_hi.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=10.0),
+              _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
+  assert abs(c_hi.inertia_j_used - STEER_INERTIA_J_MAX) < 1e-9
+  c_neg = CoopSteeringCarController()
+  c_neg.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=-1.0),
+               _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
+  assert c_neg.inertia_j_used == 0.0
