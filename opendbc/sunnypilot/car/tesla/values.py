@@ -18,3 +18,7 @@ class TeslaFlagsSP(IntFlag):
 
 class TeslaSafetyFlagsSP:
   HAS_VEHICLE_BUS = 1
+  # Two-bit MADS-toggle finger count (mirrors TeslaFlagsSP, with _5): 00 -> 3 (legacy), 01 -> 4, 10 -> 5.
+  # Threaded to the panda so its MADS touch-point grant uses the SAME count as carstate_ext (>= N), not a hardcoded 3.
+  MADS_TOGGLE_FINGERS_4 = 2
+  MADS_TOGGLE_FINGERS_5 = 4
