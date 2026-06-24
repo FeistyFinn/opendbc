@@ -67,17 +67,21 @@ class CarStateExt:
         ret_sp.speedLimit = speed_limit * CV.MPH_TO_MS
 
   def update_coop_steering_sp(self, ret_sp: structs.CarStateSP) -> None:
-    """Log the cooperative-steering inertia-FF internals (incl. shadow mode) to CarStateSP for
-    telemetry. Sourced from the carcontroller's coop_steer instance, which stashes itself on this
-    CarState each frame (1-frame lag). Defensive: telemetry must never break carstate."""
+    """Log the cooperative-steering inertia-FF internals to CarStateSP for telemetry. The FF is
+    always computed while coop steering is active; inertiaCompActive means it is applied live and
+    shadowActive means it is computed + logged but not applied. Sourced from the carcontroller's
+    coop_steer instance, which stashes itself on this CarState each frame (1-frame lag). Defensive:
+    telemetry must never break carstate."""
     coop_steer = self.coop_steering_debug
     if coop_steer is None:
       return
     try:
       sp = ret_sp.coopSteering
-      sp.coopActive = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING)
-      sp.inertiaCompActive = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_COMP)
-      sp.shadowActive = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW)
+      coop_active = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING)
+      inertia_applied = bool(self.CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_COMP)
+      sp.coopActive = coop_active
+      sp.inertiaCompActive = inertia_applied                  # FF applied live (off -> shadow)
+      sp.shadowActive = coop_active and not inertia_applied   # FF computed + logged but not applied
       sp.alphaFilt = float(coop_steer.alpha_filt_last)
       sp.tauInertia = float(coop_steer.tau_inertia_last)
       sp.tauIntent = float(coop_steer.tau_intent_last)

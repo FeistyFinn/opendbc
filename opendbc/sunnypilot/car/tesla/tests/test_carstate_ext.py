@@ -89,10 +89,10 @@ def test_lower_threshold_still_single_toggle():
 
 def test_coop_steering_telemetry_populates_carstatesp():
   # carstate_ext logs the carcontroller's coop_steer internals to CarStateSP.coopSteering for
-  # shadow-mode data-gathering; must be best-effort (never raise).
+  # data-gathering; must be best-effort (never raise). inertiaCompActive == FF applied live;
+  # shadowActive == coop active but FF not applied (computed + logged only).
   ext = _ext(5)
-  ext.CP_SP.flags |= (TeslaFlagsSP.COOP_STEERING | TeslaFlagsSP.COOP_STEERING_INERTIA_COMP
-                      | TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW).value
+  ext.CP_SP.flags |= (TeslaFlagsSP.COOP_STEERING | TeslaFlagsSP.COOP_STEERING_INERTIA_COMP).value
 
   # before the carcontroller stashes anything: no-op, no crash
   ret_sp = structs.CarStateSP()
@@ -105,8 +105,17 @@ def test_coop_steering_telemetry_populates_carstatesp():
   ret_sp = structs.CarStateSP()
   ext.update_coop_steering_sp(ret_sp)
   c = ret_sp.coopSteering
-  assert c.coopActive and c.inertiaCompActive and c.shadowActive
+  # comp flag set -> FF applied live, so not shadow
+  assert c.coopActive and c.inertiaCompActive and not c.shadowActive
   assert abs(c.alphaFilt - 3.2) < 1e-6 and abs(c.inertiaJUsed - 0.08) < 1e-6 and abs(c.angleOverride - 4.1) < 1e-6
+
+  # comp flag clear -> shadow: FF still computed + logged but not applied
+  ext.CP_SP.flags &= ~TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value
+  ret_sp = structs.CarStateSP()
+  ext.update_coop_steering_sp(ret_sp)
+  c = ret_sp.coopSteering
+  assert c.coopActive and not c.inertiaCompActive and c.shadowActive
+  assert abs(c.alphaFilt - 3.2) < 1e-6  # FF telemetry still logged in shadow
 
   # a malformed debug object must never raise (telemetry is best-effort)
   ext.coop_steering_debug = SimpleNamespace()  # missing attrs
