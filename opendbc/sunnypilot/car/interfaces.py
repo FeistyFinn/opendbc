@@ -112,11 +112,10 @@ def _initialize_coop_steering(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
     if coop_steering:
       CP_SP.flags |= TeslaFlagsSP.COOP_STEERING.value
       CP_SP.teslaCoopSteeringInertiaJ = float(params_dict.get("TeslaCoopSteeringInertiaJ", 0.0))
-      inertia_comp = int(params_dict.get("TeslaCoopSteeringInertiaComp", 1)) == 1
-      if inertia_comp:
+      # single toggle: 1 -> apply the inertia FF live, 0 -> shadow (FF computed + logged, not applied).
+      # default 0 (shadow) is the safe default; the FF is always computed while coop steering is on.
+      if int(params_dict.get("TeslaCoopSteeringInertiaComp", 0)) == 1:
         CP_SP.flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value
-        if int(params_dict.get("TeslaCoopSteeringInertiaShadow", 0)) == 1:
-          CP_SP.flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW.value
 
 
 def _initialize_tesla_mads_screen_button(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
