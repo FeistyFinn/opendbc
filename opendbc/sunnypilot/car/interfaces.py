@@ -160,6 +160,7 @@ def _initialize_tesla_mads_screen_button(CP: structs.CarParams, CP_SP: structs.C
     elif selection == MadsScreenButtonType.FIVE_FINGER:
       CP_SP.flags |= TeslaFlagsSP.MADS_SCREEN_BUTTON_5_FINGER.value
       CP_SP.safetyParam |= TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_5_FINGER
+    # selection == MadsScreenButtonType.OFF: leave both clear -> panda holds the button UNAVAILABLE
 
 
 def _initialize_radar_tracks(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
