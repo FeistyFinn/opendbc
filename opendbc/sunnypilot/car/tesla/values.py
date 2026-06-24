@@ -14,7 +14,7 @@ class TeslaFlagsSP(IntFlag):
   MADS_SCREEN_BUTTON_4_FINGER = 8
   MADS_SCREEN_BUTTON_5_FINGER = 16
   COOP_STEERING_INERTIA_COMP = 32  # Inertia FF inside coop steering
-  COOP_STEERING_INERTIA_SHADOW = 64  # Inertia FF computes + logs but does NOT apply (shadow data-gathering)
+  # bit 64 retired: the inertia FF is now always computed; COOP_STEERING_INERTIA_COMP gates apply (live) vs shadow.
 
 
 class MadsScreenButtonType:

@@ -136,38 +136,34 @@ class CoopSteeringCarController:
     self.inertia_j_used = 0.0
 
   def update_override_angle(self, apply_angle_delta: float, driver_torque: float,
-                            steering_rate_deg: float, inertia_comp_enabled: bool, inertia_j: float,
-                            shadow: bool, vEgo: float, VM: VehicleModel) -> float:
+                            steering_rate_deg: float, apply_inertia: bool, inertia_j: float,
+                            vEgo: float, VM: VehicleModel) -> float:
     """
     Update angle_override toward the driver torque target subject to torque-based rate limits.
-    With inertia compensation, the FF term J * alpha_wheel is subtracted from the measured
-    driver torque before the deadzone + gain stage, so wheel-acceleration ghost-torque is
-    not confused with intent. In shadow mode the FF is computed + logged but not applied: the
-    override is driven off the raw measured torque (baseline), for safe data-gathering.
+    The inertia feed-forward (FF) term J * alpha_wheel is ALWAYS computed and logged while coop
+    steering is active, so wheel-acceleration ghost-torque is measured on every drive. The single
+    apply_inertia flag (COOP_STEERING_INERTIA_COMP) decides whether it is APPLIED: when on (live)
+    the FF is subtracted from the measured driver torque before the deadzone + gain stage, so the
+    ghost-torque is not confused with intent; when off (shadow) the override is driven off the raw
+    measured torque (baseline, unchanged steering) while the FF is still logged for analysis.
     """
-    if inertia_comp_enabled:
-      alpha_raw_deg_per_s2 = (steering_rate_deg - self.prev_steering_rate_deg) / DT_LAT_CTRL
-      alpha_filt_rad_per_s2 = math.radians(self.alpha_filter.update(alpha_raw_deg_per_s2))
-      tau_inertia = apply_bounds(inertia_j * alpha_filt_rad_per_s2, STEER_INERTIA_TORQUE_LIMIT)
-      # Only apply the FF when the driver is actually engaging the wheel. Without this guard,
-      # openpilot-driven wheel rotation (no driver torque, but nonzero alpha) would manufacture
-      # a phantom negative intent torque outside the deadzone and grow a spurious override.
-      if abs(driver_torque) <= STEER_OVERRIDE_MIN_TORQUE:
-        tau_inertia = 0.0
-      self.alpha_filt_last = alpha_filt_rad_per_s2
-      self.inertia_j_used = inertia_j
-    else:
-      self.alpha_filter.x = 0.0
-      self.alpha_filter.initialized = False
+    alpha_raw_deg_per_s2 = (steering_rate_deg - self.prev_steering_rate_deg) / DT_LAT_CTRL
+    alpha_filt_rad_per_s2 = math.radians(self.alpha_filter.update(alpha_raw_deg_per_s2))
+    tau_inertia = apply_bounds(inertia_j * alpha_filt_rad_per_s2, STEER_INERTIA_TORQUE_LIMIT)
+    # Only count the FF when the driver is actually engaging the wheel. Without this guard,
+    # openpilot-driven wheel rotation (no driver torque, but nonzero alpha) would manufacture
+    # a phantom negative intent torque outside the deadzone and grow a spurious override.
+    if abs(driver_torque) <= STEER_OVERRIDE_MIN_TORQUE:
       tau_inertia = 0.0
-      self.alpha_filt_last = 0.0
-      self.inertia_j_used = 0.0
+    self.alpha_filt_last = alpha_filt_rad_per_s2
+    self.inertia_j_used = inertia_j
     self.prev_steering_rate_deg = steering_rate_deg
     self.tau_inertia_last = tau_inertia
     self.tau_intent_last = driver_torque - tau_inertia
-    # Shadow: the FF is computed + logged above but NOT applied -- drive the override off the raw
-    # measured torque so baseline coop steering is unchanged while we gather FF data on the commute.
-    driver_torque_intent = driver_torque if shadow else self.tau_intent_last
+    # Live (apply_inertia): drive the override off the inertia-compensated intent. Shadow (off):
+    # drive off the raw measured torque so baseline coop steering is unchanged while the FF above
+    # is still logged for data-gathering on the commute.
+    driver_torque_intent = self.tau_intent_last if apply_inertia else driver_torque
 
     # Target angle
     driver_torque_with_deadzone = apply_deadzone(driver_torque_intent, STEER_OVERRIDE_MIN_TORQUE)
@@ -221,9 +217,8 @@ class CoopSteeringCarController:
 
   def update(self, apply_angle, lat_active, CP_SP: structs.CarParamsSP, CS: structs.CarState, VM: VehicleModel) -> CoopSteeringDataSP:
     angle_coop_enabled = CP_SP.flags & TeslaFlagsSP.COOP_STEERING.value
-    inertia_comp_enabled = bool(CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value)
-    # shadow: compute + log the FF but apply the baseline override (data-gathering, no steering change)
-    inertia_shadow = bool(CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_SHADOW.value)
+    # single toggle: apply the inertia FF live (on) vs shadow (off -- FF still computed + logged)
+    apply_inertia = bool(CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value)
     # per-vehicle tunable J (param), hard-clamped so a bad value can never blow up the FF; 0 -> default
     inertia_j = float(np.clip(CP_SP.teslaCoopSteeringInertiaJ or STEER_INERTIA_J, 0.0, STEER_INERTIA_J_MAX))
 
@@ -237,8 +232,8 @@ class CoopSteeringCarController:
     apply_angle_delta = apply_angle - self.apply_angle_last
     self.apply_angle_last = apply_angle
     apply_angle += self.update_override_angle(apply_angle_delta, CS.out.steeringTorque,
-                                              CS.out.steeringRateDeg, inertia_comp_enabled, inertia_j,
-                                              inertia_shadow, CS.out.vEgo, VM)
+                                              CS.out.steeringRateDeg, apply_inertia, inertia_j,
+                                              CS.out.vEgo, VM)
 
     # final rate limit - matching panda safety
     self.coop_apply_angle_sat_last = apply_steer_angle_limits_vm(apply_angle, self.coop_apply_angle_sat_last, CS.out.vEgoRaw,
