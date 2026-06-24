@@ -26,6 +26,8 @@ class MadsScreenButtonType:
 
 class TeslaSafetyFlagsSP:
   HAS_VEHICLE_BUS = 1
+  # Threaded to the panda so its MADS touch-point grant uses the SAME count as carstate_ext (>= N),
+  # not a hardcoded 3. No bit set == MadsScreenButtonType.OFF: the panda leaves the button UNAVAILABLE.
   MADS_SCREEN_BUTTON_3_FINGER = 2
   MADS_SCREEN_BUTTON_4_FINGER = 4
   MADS_SCREEN_BUTTON_5_FINGER = 8

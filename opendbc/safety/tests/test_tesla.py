@@ -530,11 +530,9 @@ class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
     self.safety.set_safety_hooks(CarParams.SafetyModel.tesla, 0)
     self.safety.init_tests()
 
-  def _lkas_button_msg(self, enabled):
-    values = {"UI_activeTouchPoints": 3 if enabled else 0}
-    return self.packer_adas.make_can_msg_safety("UI_status2", CANBUS.vehicle, values)
-
   def _set_mads_screen_button_config(self, finger_flag):
+    # Re-init the Tesla safety mode with the screen-button config threaded over the SP safety param,
+    # exactly as pandad does at runtime (current_safety_param_sp). finger_flag None == OFF.
     param_sp = TeslaSafetyFlagsSP.HAS_VEHICLE_BUS
     if finger_flag is not None:
       param_sp |= finger_flag
@@ -545,8 +543,31 @@ class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
   def _touch_points_msg(self, touch_points):
     return self.packer_adas.make_can_msg_safety("UI_status2", CANBUS.vehicle, {"UI_activeTouchPoints": touch_points})
 
-  def test_mads_screen_button_finger_count_match(self):
-    """Configured finger count must match received touch-point count to register a MADS button press."""
+  def _lkas_button_msg(self, enabled):
+    # setUp configures the 3-finger screen button; a "press" lands on 3 touch points.
+    return self._touch_points_msg(3 if enabled else 0)
+
+  def _gesture_grants_lateral(self, touch_points):
+    # MADS enabled; one gesture: armed (0) -> land on `touch_points` -> fingers lifted (0).
+    self.safety.set_mads_params(True, False, False)
+    self.safety.set_controls_allowed_lateral(False)
+    self.safety.set_controls_requested_lateral(False)
+    self.safety.set_mads_button_press(-1)
+    self._rx(self._touch_points_msg(0))
+    self._rx(self._touch_points_msg(touch_points))
+    self._rx(self._touch_points_msg(0))
+    return self.safety.get_controls_allowed_lateral()
+
+  def test_mads_screen_button_finger_count_ge_match(self):
+    """VTB DIVERGENCE from upstream: the received touch-point count must REACH the configured count
+    (`>=`), not equal it. Upstream ships this same matrix asserting `actual == config_count`; that
+    exact match is the storm bug -- UI_activeTouchPoints is noisy and skips integer values, so it
+    misses genuine N-finger presses while openpilot's carstate_ext (which matches `>= N`) goes
+    MADS-active, and the two desync -> controlsMismatchLateral. Live-confirmed on-car 2026-06-25.
+
+    This test is deliberately NOT named test_mads_screen_button_finger_count_match: if a future sync
+    re-introduces upstream's `==` version, it lands alongside this one and goes red instead of
+    silently reverting the fix. See notes/vtb-mads-screenbutton-reconciliation.md."""
     configs = [
       (TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_3_FINGER, 3),
       (TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_4_FINGER, 4),
@@ -557,8 +578,22 @@ class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
         with self.subTest(configured=config_count, actual=actual):
           self._set_mads_screen_button_config(config_flag)
           self._rx(self._touch_points_msg(actual))
-          expected = 1 if actual == config_count else 0  # PRESSED vs NOT_PRESSED
+          expected = 1 if actual >= config_count else 0  # PRESSED vs NOT_PRESSED
           self.assertEqual(expected, self.safety.get_mads_button_press())
+
+  def test_mads_screen_button_overshoot_pressed(self):
+    """Explicit `>=` lock-in: configured 4 reads PRESSED at 4 AND at every higher touch count, and
+    NOT_PRESSED below 4. A capacitive tap regularly overshoots its target count; upstream's `==`
+    would drop those presses and desync the panda from openpilot."""
+    self._set_mads_screen_button_config(TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_4_FINGER)
+    for actual in (4, 5, 6, 7):
+      with self.subTest(actual=actual, expected="PRESSED"):
+        self._rx(self._touch_points_msg(actual))
+        self.assertEqual(1, self.safety.get_mads_button_press())
+    for actual in (0, 1, 2, 3):
+      with self.subTest(actual=actual, expected="NOT_PRESSED"):
+        self._rx(self._touch_points_msg(actual))
+        self.assertEqual(0, self.safety.get_mads_button_press())
 
   def test_mads_screen_button_disabled(self):
     """With no finger-count flag set, touch messages must not change the MADS button state from UNAVAILABLE."""
@@ -567,6 +602,36 @@ class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
       with self.subTest(actual=actual):
         self._rx(self._touch_points_msg(actual))
         self.assertEqual(-1, self.safety.get_mads_button_press())  # UNAVAILABLE
+
+  def test_mads_button_finger_count(self):
+    """The panda grants the MADS button when active touch points reach the configured count using
+    `>=` (matching openpilot's carstate_ext gesture), threaded via current_safety_param_sp -- NOT an
+    exact `== 3`. The exact match desynced on the noisy, value-skipping touch signal (a tap can jump
+    straight past its target) while openpilot went MADS-active -> the controlsMismatchLateral storm.
+    Parametrized over every configured count {3,4,5} and every touch count 0..6."""
+    cases = [
+      (3, TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_3_FINGER),
+      (4, TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_4_FINGER),
+      (5, TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_5_FINGER),
+    ]
+    for n, param_bit in cases:
+      self._set_mads_screen_button_config(param_bit)
+      for touch_points in range(7):
+        with self.subTest(fingers=n, touch_points=touch_points):
+          self.assertEqual(touch_points >= n, self._gesture_grants_lateral(touch_points),
+                           f"fingers={n} touch={touch_points}: expected grant={touch_points >= n}")
+
+  def test_mads_button_storm_regression(self):
+    """Real storm vector from an on-device route (menu set to 3 fingers): the
+    "3-finger" taps registered on the capacitive screen as 4-5 touch points and never as exactly 3
+    (seg 2's touch counts were only {4, 5}). openpilot fired on `>= 3` and went MADS-active, but the
+    old exact `== 3` never matched -> controlsMismatchLateral ("TAKE CONTROL") 2.0s after each engage.
+    With `>= 3` the 0 -> 5 jump grants cleanly; a tap that only reaches 2 still does not grant."""
+    self._set_mads_screen_button_config(TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_3_FINGER)
+    self.assertTrue(self._gesture_grants_lateral(5),
+                    "0->5 touch jump must grant lateral with >= N (regression: old == 3 failed)")
+    self.assertFalse(self._gesture_grants_lateral(2),
+                     "a tap reaching only 2 points must not grant lateral at N=3")
 
 
 if __name__ == "__main__":

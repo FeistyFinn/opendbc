@@ -121,7 +121,11 @@ def _initialize_coop_steering(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
 def _initialize_tesla_mads_screen_button(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
                                          params_dict: dict[str, str]) -> None:
   if CP.brand == 'tesla' and CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
-    selection = int(params_dict.get("TeslaMadsScreenButton", MadsScreenButtonType.THREE_FINGER))
+    # VTB DIVERGENCE from upstream: the fallback is FIVE_FINGER, not THREE_FINGER. This fork matches the
+    # touch count with `>=` (see tesla.h), so a 3-finger setting also grants on 4- and 5-touch gestures --
+    # map zoom and climate swipes included. 5 is the count validated on-car; keep it in step with the
+    # TeslaMadsScreenButton default registered in the openpilot superproject's params_keys.h.
+    selection = int(params_dict.get("TeslaMadsScreenButton", MadsScreenButtonType.FIVE_FINGER))
     if selection == MadsScreenButtonType.THREE_FINGER:
       CP_SP.flags |= TeslaFlagsSP.MADS_SCREEN_BUTTON_3_FINGER.value
       CP_SP.safetyParam |= TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_3_FINGER
@@ -131,6 +135,7 @@ def _initialize_tesla_mads_screen_button(CP: structs.CarParams, CP_SP: structs.C
     elif selection == MadsScreenButtonType.FIVE_FINGER:
       CP_SP.flags |= TeslaFlagsSP.MADS_SCREEN_BUTTON_5_FINGER.value
       CP_SP.safetyParam |= TeslaSafetyFlagsSP.MADS_SCREEN_BUTTON_5_FINGER
+    # selection == MadsScreenButtonType.OFF: leave both clear -> panda holds the button UNAVAILABLE
 
 
 def _initialize_radar_tracks(CP: structs.CarParams, CP_SP: structs.CarParamsSP,

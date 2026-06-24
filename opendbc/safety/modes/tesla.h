@@ -212,7 +212,15 @@ static void tesla_rx_hook(const CANPacket_t *msg) {
   if (msg->bus == 1U) {
     if (msg->addr == 0x3DFU) {
       if (tesla_mads_screen_button_fingers != 0U) {
-        mads_button_press = (msg->data[3] == tesla_mads_screen_button_fingers) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
+        /* VTB DIVERGENCE from upstream: `>=`, not `==`. UI_activeTouchPoints (byte 3) is noisy and
+           skips integer values, so an exact match misses genuine N-finger presses: openpilot
+           (carstate_ext, which matches `>= N`) went MADS-active while the panda did not, and the two
+           desynced -> controlsMismatchLateral storm ("TAKE CONTROL" + siren ~2.0s after each engage).
+           Live-confirmed on-car 2026-06-25. Do NOT "fix" this back to `==`; it must stay in lockstep
+           with opendbc/sunnypilot/car/tesla/carstate_ext.py. See
+           notes/vtb-mads-screenbutton-reconciliation.md. Locked by
+           test_mads_screen_button_finger_count_ge_match + test_mads_screen_button_overshoot_pressed. */
+        mads_button_press = (msg->data[3] >= tesla_mads_screen_button_fingers) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
       }
     }
   }
