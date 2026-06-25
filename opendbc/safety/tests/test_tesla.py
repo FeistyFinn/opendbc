@@ -575,7 +575,7 @@ class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
                            f"fingers={n} touch={touch_points}: expected grant={touch_points >= n}")
 
   def test_mads_button_storm_regression(self):
-    """Real storm vector from route 000001ae--b3b7515bbb (2026-06-24, menu set to 3 fingers): the
+    """Real storm vector from an on-device route (menu set to 3 fingers): the
     "3-finger" taps registered on the capacitive screen as 4-5 touch points and never as exactly 3
     (seg 2's touch counts were only {4, 5}). openpilot fired on `>= 3` and went MADS-active, but the
     old exact `== 3` never matched -> controlsMismatchLateral ("TAKE CONTROL") 2.0s after each engage.
