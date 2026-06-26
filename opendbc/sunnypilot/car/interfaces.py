@@ -113,6 +113,10 @@ def _initialize_coop_steering(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
       CP_SP.flags |= TeslaFlagsSP.COOP_STEERING.value
       # Inertia FF is shadow-only: always computed + logged off this J, never applied to steering.
       CP_SP.teslaCoopSteeringInertiaJ = float(params_dict.get("TeslaCoopSteeringInertiaJ", 0.0))
+      # Standstill inertia-J calibration dither (ALPHA): active excitation, gated to coop steering.
+      # Bounded command added upstream of the panda angle limiter -> safety model unchanged.
+      if int(params_dict.get("TeslaCoopSteeringDitherCalibAlpha", 0)) == 1:
+        CP_SP.flags |= TeslaFlagsSP.COOP_STEERING_DITHER_CALIB_ALPHA.value
 
 
 def _initialize_tesla_infotainment_gesture(CP: structs.CarParams, CP_SP: structs.CarParamsSP,

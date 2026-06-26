@@ -87,6 +87,10 @@ class CarStateExt:
       sp.tauIntent = float(coop_steer.tau_intent_last)
       sp.inertiaJUsed = float(coop_steer.inertia_j_used)
       sp.angleOverride = float(coop_steer.angle_override)
+      # standstill inertia-J calibration dither (ALPHA); getattr-defaulted so older/faked debug
+      # objects without these attrs don't break the rest of the telemetry block
+      sp.ditherActive = bool(getattr(coop_steer, "dither_active_last", False))
+      sp.ditherCommandDeg = float(getattr(coop_steer, "dither_command_last", 0.0))
     except Exception:  # telemetry must never break carstate
       pass
 

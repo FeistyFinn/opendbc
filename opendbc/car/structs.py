@@ -183,3 +183,5 @@ class CarStateSP:
     tauIntent: float = auto_field()
     inertiaJUsed: float = auto_field()
     angleOverride: float = auto_field()
+    ditherActive: bool = auto_field()
+    ditherCommandDeg: float = auto_field()

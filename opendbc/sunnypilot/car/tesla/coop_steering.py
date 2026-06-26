@@ -48,6 +48,26 @@ STEER_OVERRIDE_TARGET_ANGLE_MAX = CarControllerParams.ANGLE_LIMITS.STEER_ANGLE_M
 STEER_OVERRIDE_DELTA_GAIN_LIMIT = 125 # deg/s/Nm
 STEER_OVERRIDE_DELTA_GAIN_LIMIT_CENTERING = CoopSteeringCarControllerParams.ANGLE_LIMITS.MAX_ANGLE_RATE / DT_LAT_CTRL / STEER_OVERRIDE_TORQUE_RANGE
 
+# --- standstill inertia-J calibration dither (ALPHA) --------------------------------------------
+# Active excitation: a small, bounded, windowed multi-tone steering-angle command, injected ONLY at
+# standstill, hands-off, while coop steering AND the calibration param are armed. It makes the wheel
+# accelerate so the torsion-bar response identifies the column inertia J (Re(Z) = k - J*w^2) -- the
+# one regime passive driving cannot reach (|alpha| is too small hands-off). The command is ADDED
+# upstream of the panda-matched angle limiter in update(), so it can never exceed the per-frame
+# angle/jerk limit and the panda safety model is unchanged. It is a ONE-RUN-PER-ARMING calibration,
+# not an always-on behavior: it ramps in, holds for DITHER_MAX_S, ramps out, then latches done until
+# the arming param is cleared (re-keyed on the next offroad->onroad cycle).
+DITHER_AMP_DEG = 0.2                                            # deg - peak |dither| (sum of tones); bring-up starts smaller
+DITHER_TONES_HZ = (1.5, 2.5, 4.0, 5.5)                         # multi-tone in the EPS-trackable ~1-7 Hz band
+DITHER_TONE_PHASES = (0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi)  # spread to lower the crest factor
+DITHER_V_CEIL = 0.5                                            # m/s - standstill window; above this -> abort
+DITHER_RAMP_S = 0.5                                           # s - cosine-free linear ramp in / graceful ramp out
+DITHER_ABORT_S = 0.1                                          # s - fast ramp-out when a precondition is lost
+DITHER_MAX_S = 30.0                                          # s - bounded run duration
+DITHER_RAMP_FRAMES = max(1, round(DITHER_RAMP_S / DT_LAT_CTRL))
+DITHER_ABORT_FRAMES = max(1, round(DITHER_ABORT_S / DT_LAT_CTRL))
+DITHER_MAX_FRAMES = max(1, round(DITHER_MAX_S / DT_LAT_CTRL))
+
 
 CoopSteeringDataSP = namedtuple("CoopSteeringDataSP",
                                 ["steeringAngleDeg", "lat_active"])
@@ -109,6 +129,66 @@ class SteerRateLimiter:
     return angle_lim
 
 
+class DitherCalibrator:
+  """Bounded standstill active-excitation source for inertia-J calibration (ALPHA).
+
+  Emits a small windowed multi-tone steering-angle dither (command_deg) only while armed AND at
+  standstill AND hands-off AND lateral control is active. The command ramps in/out (no step) and is
+  ADDED upstream of the panda-matched angle limiter, so it is clamped like any other command and the
+  safety model is unchanged. Aborts (fast ramp to 0) the instant any precondition is lost. One run
+  per arming: a run that reaches DITHER_MAX_S latches `finished` and will not re-fire until the
+  arming param is cleared (`armed` goes False), which happens on the next offroad->onroad cycle. A
+  run cut short by a lost precondition (driver touch, rollaway) does NOT latch, so it can retry once
+  conditions are re-satisfied."""
+  def __init__(self):
+    self.reset()
+
+  def reset(self) -> None:
+    self.env = 0.0          # 0..1 ramp envelope (smooths start/stop -> no step transient)
+    self.phase_frames = 0   # frames the tone has been live (advances the multi-tone argument)
+    self.run_frames = 0     # frames since this run began commanding (duration cap)
+    self.finished = False   # natural-completion latch; cleared only when disarmed
+    self.active = False
+    self.command = 0.0
+
+  def _multitone(self, n: int) -> float:
+    t = n * DT_LAT_CTRL
+    amp = DITHER_AMP_DEG / len(DITHER_TONES_HZ)   # worst-case |sum| = len*amp = DITHER_AMP_DEG
+    s = 0.0
+    for f, ph in zip(DITHER_TONES_HZ, DITHER_TONE_PHASES, strict=True):
+      s += math.sin(2.0 * math.pi * f * t + ph)
+    return amp * s
+
+  def update(self, armed: bool, lat_active: bool, standstill: bool, hands_off: bool) -> tuple[bool, float]:
+    precond = armed and lat_active and standstill and hands_off
+    # one run per arming: only re-arm (clear the completion latch) when the param is dropped
+    if self.finished and not armed:
+      self.finished = False
+
+    want = precond and not self.finished and self.run_frames < DITHER_MAX_FRAMES
+    if want:
+      self.env = min(1.0, self.env + 1.0 / DITHER_RAMP_FRAMES)
+    else:
+      # graceful ramp-out on natural completion (precond still holds), fast ramp-out on a lost precond
+      ramp_down = DITHER_RAMP_FRAMES if (precond and not self.finished) else DITHER_ABORT_FRAMES
+      self.env = max(0.0, self.env - 1.0 / ramp_down)
+
+    if self.env > 0.0 or want:
+      self.command = self.env * self._multitone(self.phase_frames)
+      self.phase_frames += 1
+      self.run_frames += 1
+      self.active = True
+    else:
+      # fully stopped: latch only a run that reached the duration cap (natural completion), then reset
+      if self.run_frames >= DITHER_MAX_FRAMES:
+        self.finished = True
+      self.phase_frames = 0
+      self.run_frames = 0
+      self.command = 0.0
+      self.active = False
+    return self.active, self.command
+
+
 class CoopSteeringCarController:
   def __init__(self):
     self.apply_angle_last = 0
@@ -122,6 +202,9 @@ class CoopSteeringCarController:
     self.tau_intent_last = 0.0
     self.alpha_filt_last = 0.0
     self.inertia_j_used = 0.0
+    self.dither = DitherCalibrator()
+    self.dither_active_last = False
+    self.dither_command_last = 0.0
 
   def reset_override_state(self, apply_angle: float, current_steering_rate_deg: float = 0.0) -> None:
     self.apply_angle_last = apply_angle
@@ -134,6 +217,9 @@ class CoopSteeringCarController:
     self.tau_intent_last = 0.0
     self.alpha_filt_last = 0.0
     self.inertia_j_used = 0.0
+    self.dither.reset()
+    self.dither_active_last = False
+    self.dither_command_last = 0.0
 
   def update_override_angle(self, apply_angle_delta: float, driver_torque: float,
                             steering_rate_deg: float, inertia_j: float,
@@ -231,6 +317,15 @@ class CoopSteeringCarController:
     apply_angle += self.update_override_angle(apply_angle_delta, CS.out.steeringTorque,
                                               CS.out.steeringRateDeg, inertia_j,
                                               CS.out.vEgo, VM)
+
+    # Standstill inertia-J calibration dither (ALPHA): bounded active excitation, ADDED here -- before
+    # the panda-matched limiter below -- so a generator bug can never exceed the per-frame angle/jerk
+    # limit. Gated to standstill + hands-off; aborts on driver touch / rollaway (see DitherCalibrator).
+    dither_armed = bool(CP_SP.flags & TeslaFlagsSP.COOP_STEERING_DITHER_CALIB_ALPHA.value)
+    hands_off = (not CS.out.steeringPressed) and abs(CS.out.steeringTorque) < STEER_OVERRIDE_MIN_TORQUE
+    standstill = abs(CS.out.vEgo) < DITHER_V_CEIL
+    self.dither_active_last, self.dither_command_last = self.dither.update(dither_armed, lat_active, standstill, hands_off)
+    apply_angle += self.dither_command_last
 
     # final rate limit - matching panda safety
     self.coop_apply_angle_sat_last = apply_steer_angle_limits_vm(apply_angle, self.coop_apply_angle_sat_last, CS.out.vEgoRaw,

@@ -17,6 +17,9 @@ class TeslaFlagsSP(IntFlag):
   MADS_TOGGLE_FINGERS_4 = 8  # Two-bit encoding of MADS-toggle finger count (with _5):
   MADS_TOGGLE_FINGERS_5 = 16  #   00 -> 3 fingers (legacy), 01 -> 4, 10 -> 5
   # bit 32 retired: an earlier inertia-mode bit; do not reuse.
+  # FRESH bit for the standstill inertia-J calibration dither (the "live FF returns for in-car alpha"
+  # case the bit-4 retirement comment anticipated): active excitation, ALPHA, gated to COOP_STEERING.
+  COOP_STEERING_DITHER_CALIB_ALPHA = 64
 
 
 class TeslaSafetyFlagsSP:
