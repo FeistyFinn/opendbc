@@ -10,10 +10,13 @@ from enum import IntFlag
 class TeslaFlagsSP(IntFlag):
   HAS_VEHICLE_BUS = 1  # Infotainment multi-touch signal is present on the VEHICLE bus with the deprecated Tesla harness installed
   COOP_STEERING = 2  # Coop steering (master)
-  COOP_STEERING_INERTIA_COMP = 4  # Inertia FF inside coop steering
+  # bit 4 retired (was COOP_STEERING_INERTIA_COMP): the inertia FF is now SHADOW-ONLY -- always computed +
+  # logged, never applied to steering -- until a workable J ships. Do not reuse bit 4. When the live FF
+  # returns for in-car alpha testing, allocate a FRESH bit and name the param/flag with "alpha" in it
+  # (e.g. TeslaCoopSteeringInertiaCompAlpha / COOP_STEERING_INERTIA_COMP_ALPHA) to mark it as alpha.
   MADS_TOGGLE_FINGERS_4 = 8  # Two-bit encoding of MADS-toggle finger count (with _5):
   MADS_TOGGLE_FINGERS_5 = 16  #   00 -> 3 fingers (legacy), 01 -> 4, 10 -> 5
-  # bit 32 retired: the inertia FF is now always computed; COOP_STEERING_INERTIA_COMP gates apply (live) vs shadow.
+  # bit 32 retired: an earlier inertia-mode bit; do not reuse.
 
 
 class TeslaSafetyFlagsSP:

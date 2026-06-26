@@ -37,15 +37,13 @@ def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0, steering_rate_deg=0.
   return SimpleNamespace(out=out)
 
 
-def _cp_sp(coop=True, inertia_comp=True, inertia_j=0.0):
-  # inertia_comp == COOP_STEERING_INERTIA_COMP: on -> FF applied live, off -> shadow (FF still
-  # computed + logged but not applied). The FF is always computed while coop steering is active.
+def _cp_sp(coop=True, inertia_j=0.0):
+  # The inertia FF is shadow-only: it is always computed + logged while coop steering is active but
+  # never applied to steering (the live-apply toggle was removed). inertia_j scales the logged FF.
   cp_sp = structs.CarParamsSP()
   flags = 0
   if coop:
     flags |= TeslaFlagsSP.COOP_STEERING.value
-    if inertia_comp:
-      flags |= TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value
   cp_sp.flags = flags
   cp_sp.teslaCoopSteeringInertiaJ = inertia_j  # 0.0 -> module default
   return cp_sp
@@ -149,14 +147,14 @@ def test_release_resets_override_to_input_angle():
   assert out.steeringAngleDeg == 12.0  # returns commanded angle, no leftover override
 
 
-# --- inertia compensation ---
+# --- inertia compensation (SHADOW-ONLY: FF is always computed + logged, never applied) ---
 
 def test_inertia_no_false_override_from_rotation_alone():
   # Wheel is rotating (large alpha from a rate ramp) but driver is not engaging:
   # the compensation must not manufacture a phantom intent torque that grows the override.
   # Guard: with |driver_torque| <= deadzone, tau_inertia is forced to 0.
   c = CoopSteeringCarController()
-  cp_sp = _cp_sp(coop=True, inertia_comp=True)
+  cp_sp = _cp_sp(coop=True)
   rate = 0.0
   for _ in range(50):
     c.update(0.0, True, cp_sp, _cs(steering_torque=0.0, steering_rate_deg=rate), VM)
@@ -166,33 +164,29 @@ def test_inertia_no_false_override_from_rotation_alone():
 
 
 def test_inertia_noop_at_steady_state():
-  # Above-deadzone driver torque with zero wheel rotation: alpha settles to 0, tau_inertia -> 0,
-  # behavior matches the pre-compensation baseline (sub-toggle off).
-  c_on = CoopSteeringCarController()
-  c_off = CoopSteeringCarController()
-  _settle(c_on, _cp_sp(coop=True, inertia_comp=True), _cs(steering_torque=2.0))
-  _settle(c_off, _cp_sp(coop=True, inertia_comp=False), _cs(steering_torque=2.0))
-  assert abs(c_on.tau_inertia_last) < 1e-9
-  assert abs(c_on.angle_override - c_off.angle_override) < 1e-6
+  # Above-deadzone driver torque with zero wheel rotation: alpha settles to 0 so tau_inertia -> 0,
+  # and the override is the plain torque->angle baseline.
+  c = CoopSteeringCarController()
+  _settle(c, _cp_sp(coop=True), _cs(steering_torque=2.0))
+  assert abs(c.tau_inertia_last) < 1e-9
+  assert c.angle_override > 0.0
 
 
-def test_inertia_attenuates_response_during_torque_step_with_rotation():
-  # Driver torque above deadzone with wheel accelerating in the same direction (alpha > 0):
-  # tau_inertia > 0 -> driver_torque_intent = tau - J*alpha < tau -> smaller target ->
-  # angle_override grows more slowly than with compensation off.
-  def run(cp_sp):
-    c = CoopSteeringCarController()
-    rate = 0.0
-    for _ in range(20):
-      c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
-      rate += 5.0  # +250 deg/s^2 (~4.4 rad/s^2) sustained alpha
-    return c.angle_override
-
-  with_comp = run(_cp_sp(coop=True, inertia_comp=True))
-  without_comp = run(_cp_sp(coop=True, inertia_comp=False))
-  assert with_comp > 0.0
-  assert without_comp > 0.0
-  assert with_comp < without_comp
+def test_ff_logged_but_not_applied():
+  # Shadow-only: with the wheel accelerating under above-deadzone driver torque, the FF is computed
+  # and logged (tau_inertia / alpha nonzero), but it does NOT change the applied override -- the
+  # override matches an otherwise-identical run with no wheel rotation (no FF influence on steering).
+  c_rot = CoopSteeringCarController()
+  c_still = CoopSteeringCarController()
+  rate = 0.0
+  for _ in range(20):
+    c_rot.update(0.0, True, _cp_sp(coop=True), _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
+    c_still.update(0.0, True, _cp_sp(coop=True), _cs(steering_torque=2.0, steering_rate_deg=0.0), VM)
+    rate += 5.0  # +250 deg/s^2 (~4.4 rad/s^2) sustained alpha so the FF is non-trivial
+  assert abs(c_rot.tau_inertia_last) > 0.0   # FF computed + logged
+  assert abs(c_rot.alpha_filt_last) > 0.0
+  assert c_rot.angle_override > 0.0
+  assert abs(c_rot.angle_override - c_still.angle_override) < 1e-6  # FF not applied to steering
 
 
 def test_inertia_engagement_no_spike():
@@ -200,7 +194,7 @@ def test_inertia_engagement_no_spike():
   # see a spurious (current_rate - 0) / dt spike on the first frame -- reset_override_state seeds
   # prev_steering_rate_deg with the current rate and re-arms the filter to snap on first sample.
   c = CoopSteeringCarController()
-  cp_sp = _cp_sp(coop=True, inertia_comp=True)
+  cp_sp = _cp_sp(coop=True)
   c.update(0.0, False, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=20.0), VM)
   c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=20.0), VM)
   # No differentiator spike: tau_inertia is well below the clamp on the engagement frame.
@@ -208,10 +202,10 @@ def test_inertia_engagement_no_spike():
 
 
 def test_inertia_clamp_protects_against_runaway_alpha():
-  # Extreme alpha (stale-then-jump pattern) must clamp tau_inertia at STEER_INERTIA_TORQUE_LIMIT
-  # so a sensor glitch can't drive the override past sane bounds.
+  # Extreme alpha (stale-then-jump pattern) must clamp the logged tau_inertia at
+  # STEER_INERTIA_TORQUE_LIMIT so a sensor glitch can't blow up the FF telemetry.
   c = CoopSteeringCarController()
-  cp_sp = _cp_sp(coop=True, inertia_comp=True)
+  cp_sp = _cp_sp(coop=True)
   # Drive the filter into a steady state first so it is initialized
   for _ in range(5):
     c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=0.0), VM)
@@ -220,79 +214,42 @@ def test_inertia_clamp_protects_against_runaway_alpha():
   assert abs(c.tau_inertia_last) <= STEER_INERTIA_TORQUE_LIMIT + 1e-9
 
 
-def test_inertia_shadow_applies_baseline_override():
-  # Master COOP_STEERING on, COOP_STEERING_INERTIA_COMP off (shadow): even with a nonzero rate
-  # signal, the FF is not APPLIED -- the override is driven off the raw torque, so it matches a
-  # live run where the rate signal is zero (no FF to subtract). The FF is still computed + logged.
-  c_off = CoopSteeringCarController()
-  c_ref = CoopSteeringCarController()
-  rate = 0.0
-  for _ in range(80):
-    c_off.update(0.0, True, _cp_sp(coop=True, inertia_comp=False),
-                 _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
-    c_ref.update(0.0, True, _cp_sp(coop=True, inertia_comp=True),
-                 _cs(steering_torque=2.0, steering_rate_deg=0.0), VM)
-    rate += 5.0
-  assert abs(c_off.tau_inertia_last) > 0.0  # shadow still computes + logs the FF
-  assert abs(c_off.angle_override - c_ref.angle_override) < 1e-6
-
-
-# --- field-tunable inertia J (TeslaCoopSteeringInertiaJ param) ---
+# --- field-tunable inertia J (TeslaCoopSteeringInertiaJ param) -- scales the logged FF only ---
 
 def test_inertia_j_param_default_when_unset():
   # J param unset (0.0) -> the module default STEER_INERTIA_J is used.
   c = CoopSteeringCarController()
-  c.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=0.0),
+  c.update(0.0, True, _cp_sp(coop=True, inertia_j=0.0),
            _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
   assert abs(c.inertia_j_used - STEER_INERTIA_J) < 1e-9
 
 
-def test_inertia_j_param_overrides_default():
-  # Larger J subtracts more inertial torque -> smaller override than a smaller J.
+def test_j_param_scales_logged_ff_only():
+  # Larger J -> larger logged inertial torque (|tau_inertia|) and matching inertia_j_used, but
+  # shadow-only means the applied override is identical regardless of J.
   def run(j):
     c = CoopSteeringCarController()
     rate = 0.0
     for _ in range(20):
-      c.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=j),
+      c.update(0.0, True, _cp_sp(coop=True, inertia_j=j),
                _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
       rate += 5.0
-    return c.angle_override, c.inertia_j_used
-  small_ovr, small_j = run(0.02)
-  large_ovr, large_j = run(0.15)
+    return c.angle_override, c.inertia_j_used, abs(c.tau_inertia_last)
+  small_ovr, small_j, small_ff = run(0.02)
+  large_ovr, large_j, large_ff = run(0.15)
   assert abs(small_j - 0.02) < 1e-9 and abs(large_j - 0.15) < 1e-9
-  assert 0.0 < large_ovr < small_ovr
+  assert large_ff > small_ff > 0.0          # larger J -> larger logged FF
+  assert abs(small_ovr - large_ovr) < 1e-6  # but the applied override is unaffected (shadow-only)
+  assert small_ovr > 0.0
 
 
 def test_inertia_j_param_clamped_to_safe_range():
   # Out-of-range param J is hard-clamped so a bad value can never blow up the FF.
   c_hi = CoopSteeringCarController()
-  c_hi.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=10.0),
+  c_hi.update(0.0, True, _cp_sp(coop=True, inertia_j=10.0),
               _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
   assert abs(c_hi.inertia_j_used - STEER_INERTIA_J_MAX) < 1e-9
   c_neg = CoopSteeringCarController()
-  c_neg.update(0.0, True, _cp_sp(coop=True, inertia_comp=True, inertia_j=-1.0),
+  c_neg.update(0.0, True, _cp_sp(coop=True, inertia_j=-1.0),
                _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
   assert c_neg.inertia_j_used == 0.0
-
-
-# --- inertia shadow (COOP_STEERING_INERTIA_COMP off): FF computed + logged but not applied ---
-
-def test_inertia_shadow_logs_ff_and_live_attenuates():
-  # Shadow (comp off) computes + logs the FF (alpha/tau_inertia) for analysis but applies the
-  # baseline override; live comp (on) subtracts tau_inertia so its applied override is smaller.
-  def run(cp_sp):
-    c = CoopSteeringCarController()
-    rate = 0.0
-    for _ in range(20):
-      c.update(0.0, True, cp_sp, _cs(steering_torque=2.0, steering_rate_deg=rate), VM)
-      rate += 5.0  # sustained alpha so the FF is non-trivial
-    return c
-
-  shadow = run(_cp_sp(coop=True, inertia_comp=False))
-  live = run(_cp_sp(coop=True, inertia_comp=True))
-
-  # shadow computes + logs the FF even though it does not apply it
-  assert abs(shadow.tau_inertia_last) > 0.0
-  assert abs(shadow.alpha_filt_last) > 0.0
-  # live applies the FF -> smaller override than the shadow/baseline
-  assert 0.0 < live.angle_override < shadow.angle_override
