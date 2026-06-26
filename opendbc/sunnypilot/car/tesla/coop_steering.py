@@ -136,16 +136,15 @@ class CoopSteeringCarController:
     self.inertia_j_used = 0.0
 
   def update_override_angle(self, apply_angle_delta: float, driver_torque: float,
-                            steering_rate_deg: float, apply_inertia: bool, inertia_j: float,
+                            steering_rate_deg: float, inertia_j: float,
                             vEgo: float, VM: VehicleModel) -> float:
     """
     Update angle_override toward the driver torque target subject to torque-based rate limits.
-    The inertia feed-forward (FF) term J * alpha_wheel is ALWAYS computed and logged while coop
-    steering is active, so wheel-acceleration ghost-torque is measured on every drive. The single
-    apply_inertia flag (COOP_STEERING_INERTIA_COMP) decides whether it is APPLIED: when on (live)
-    the FF is subtracted from the measured driver torque before the deadzone + gain stage, so the
-    ghost-torque is not confused with intent; when off (shadow) the override is driven off the raw
-    measured torque (baseline, unchanged steering) while the FF is still logged for analysis.
+    The inertia feed-forward (FF) term J * alpha_wheel is SHADOW-ONLY: it is always computed and
+    logged while coop steering is active (so wheel-acceleration ghost-torque is measured on every
+    drive), but it is NEVER applied to steering -- the override is always driven off the raw
+    measured driver torque (baseline). The live-apply path was removed pending a workable J; the
+    offline fit (tools/sunnypilot/vtb/fit_steer_inertia.py) consumes the logged FF telemetry.
     """
     alpha_raw_deg_per_s2 = (steering_rate_deg - self.prev_steering_rate_deg) / DT_LAT_CTRL
     alpha_filt_rad_per_s2 = math.radians(self.alpha_filter.update(alpha_raw_deg_per_s2))
@@ -159,11 +158,10 @@ class CoopSteeringCarController:
     self.inertia_j_used = inertia_j
     self.prev_steering_rate_deg = steering_rate_deg
     self.tau_inertia_last = tau_inertia
-    self.tau_intent_last = driver_torque - tau_inertia
-    # Live (apply_inertia): drive the override off the inertia-compensated intent. Shadow (off):
-    # drive off the raw measured torque so baseline coop steering is unchanged while the FF above
-    # is still logged for data-gathering on the commute.
-    driver_torque_intent = self.tau_intent_last if apply_inertia else driver_torque
+    self.tau_intent_last = driver_torque - tau_inertia  # logged for analysis (the would-be live intent)
+    # Shadow-only: the override always runs off the raw measured torque so baseline coop steering is
+    # unchanged; the FF (tau_inertia / tau_intent) above is computed + logged for offline data-gathering.
+    driver_torque_intent = driver_torque
 
     # Target angle
     driver_torque_with_deadzone = apply_deadzone(driver_torque_intent, STEER_OVERRIDE_MIN_TORQUE)
@@ -217,9 +215,8 @@ class CoopSteeringCarController:
 
   def update(self, apply_angle, lat_active, CP_SP: structs.CarParamsSP, CS: structs.CarState, VM: VehicleModel) -> CoopSteeringDataSP:
     angle_coop_enabled = CP_SP.flags & TeslaFlagsSP.COOP_STEERING.value
-    # single toggle: apply the inertia FF live (on) vs shadow (off -- FF still computed + logged)
-    apply_inertia = bool(CP_SP.flags & TeslaFlagsSP.COOP_STEERING_INERTIA_COMP.value)
-    # per-vehicle tunable J (param), hard-clamped so a bad value can never blow up the FF; 0 -> default
+    # per-vehicle tunable J (param), hard-clamped so a bad value can never blow up the FF; 0 -> default.
+    # Shadow-only: J scales the logged FF only; it does not affect the applied steering angle.
     inertia_j = float(np.clip(CP_SP.teslaCoopSteeringInertiaJ or STEER_INERTIA_J, 0.0, STEER_INERTIA_J_MAX))
 
     # avoid sudden rotation on engagement
@@ -232,7 +229,7 @@ class CoopSteeringCarController:
     apply_angle_delta = apply_angle - self.apply_angle_last
     self.apply_angle_last = apply_angle
     apply_angle += self.update_override_angle(apply_angle_delta, CS.out.steeringTorque,
-                                              CS.out.steeringRateDeg, apply_inertia, inertia_j,
+                                              CS.out.steeringRateDeg, inertia_j,
                                               CS.out.vEgo, VM)
 
     # final rate limit - matching panda safety
