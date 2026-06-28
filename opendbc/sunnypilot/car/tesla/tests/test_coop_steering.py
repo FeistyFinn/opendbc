@@ -13,6 +13,7 @@ from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 from opendbc.sunnypilot.car.tesla.coop_steering import (
   CoopSteeringCarController,
   CoopSteeringCarControllerParams,
+  DitherCalibrator,
   apply_bounds,
   apply_deadzone,
   get_steer_from_lat_accel,
@@ -20,6 +21,10 @@ from opendbc.sunnypilot.car.tesla.coop_steering import (
   STEER_INERTIA_J_MAX,
   STEER_INERTIA_TORQUE_LIMIT,
   STEER_OVERRIDE_MIN_TORQUE,
+  DITHER_AMP_DEG,
+  DITHER_RAMP_FRAMES,
+  DITHER_ABORT_FRAMES,
+  DITHER_MAX_FRAMES,
 )
 
 # Tesla uses the Model Y vehicle model for lateral limiting (matches safety)
@@ -37,13 +42,16 @@ def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0, steering_rate_deg=0.
   return SimpleNamespace(out=out)
 
 
-def _cp_sp(coop=True, inertia_j=0.0):
+def _cp_sp(coop=True, inertia_j=0.0, dither=False):
   # The inertia FF is shadow-only: it is always computed + logged while coop steering is active but
   # never applied to steering (the live-apply toggle was removed). inertia_j scales the logged FF.
+  # dither arms the standstill inertia-J calibration excitation (ALPHA).
   cp_sp = structs.CarParamsSP()
   flags = 0
   if coop:
     flags |= TeslaFlagsSP.COOP_STEERING.value
+  if dither:
+    flags |= TeslaFlagsSP.COOP_STEERING_DITHER_CALIB_ALPHA.value
   cp_sp.flags = flags
   cp_sp.teslaCoopSteeringInertiaJ = inertia_j  # 0.0 -> module default
   return cp_sp
@@ -253,3 +261,111 @@ def test_inertia_j_param_clamped_to_safe_range():
   c_neg.update(0.0, True, _cp_sp(coop=True, inertia_j=-1.0),
                _cs(steering_torque=2.0, steering_rate_deg=10.0), VM)
   assert c_neg.inertia_j_used == 0.0
+
+
+# --- standstill inertia-J calibration dither (DitherCalibrator, ALPHA) ---
+
+def _drive_dither(cal, n, armed=True, lat_active=True, standstill=True, hands_off=True):
+  acts, cmds = [], []
+  for _ in range(n):
+    a, c = cal.update(armed, lat_active, standstill, hands_off)
+    acts.append(a)
+    cmds.append(c)
+  return acts, cmds
+
+
+def test_dither_inert_unless_all_preconditions():
+  # off by default and fully inert if ANY single precondition is missing
+  for kw in ({"armed": False}, {"lat_active": False}, {"standstill": False}, {"hands_off": False}):
+    cal = DitherCalibrator()
+    acts, cmds = _drive_dither(cal, 100, **kw)
+    assert not any(acts) and all(c == 0.0 for c in cmds)
+
+
+def test_dither_bounded_amplitude():
+  # |command| never exceeds the configured sum-of-tones peak, across a full-length run
+  cal = DitherCalibrator()
+  _, cmds = _drive_dither(cal, DITHER_MAX_FRAMES)
+  assert max(abs(c) for c in cmds) <= DITHER_AMP_DEG + 1e-9
+  assert max(abs(c) for c in cmds) > 0.05   # actually excites (well above noise, below the bound)
+
+
+def test_dither_ramps_in_no_step():
+  # the envelope ramps linearly from 0; the first commanded frame is ~0, not a full-amplitude jump
+  cal = DitherCalibrator()
+  acts, cmds = _drive_dither(cal, DITHER_RAMP_FRAMES + 5)
+  assert acts[0] and abs(cmds[0]) < 1e-6
+  for i, c in enumerate(cmds[:DITHER_RAMP_FRAMES]):
+    assert abs(c) <= (i + 1) / DITHER_RAMP_FRAMES * DITHER_AMP_DEG + 1e-9  # under the growing envelope
+  assert abs(cal.env - 1.0) < 1e-9            # fully ramped in after DITHER_RAMP_FRAMES
+
+
+def test_dither_aborts_fast_on_lost_precondition():
+  # run to full envelope, then lose a precondition -> envelope collapses within the abort window
+  cal = DitherCalibrator()
+  _drive_dither(cal, DITHER_RAMP_FRAMES + 10)
+  assert cal.active and cal.env > 0.99
+  _drive_dither(cal, DITHER_ABORT_FRAMES + 1, hands_off=False)
+  assert not cal.active and cal.env == 0.0
+  assert not cal.finished                     # an aborted (cut-short) run does NOT latch -> can retry
+
+
+def test_dither_one_run_per_arming_latches_then_rearms():
+  # a run that reaches the duration cap latches and will not re-fire while still armed; dropping
+  # armed (the offroad->onroad re-key) clears the latch and lets it run once more
+  cal = DitherCalibrator()
+  _drive_dither(cal, DITHER_MAX_FRAMES + DITHER_RAMP_FRAMES + 5)
+  assert cal.finished and not cal.active
+  acts, cmds = _drive_dither(cal, 50)
+  assert not any(acts) and all(c == 0.0 for c in cmds)   # still armed -> stays inert (one run)
+  cal.update(False, True, True, True)                    # disarm one frame
+  assert not cal.finished
+  acts2, _ = _drive_dither(cal, DITHER_RAMP_FRAMES + 5)
+  assert any(acts2)                                       # re-armed -> runs again
+
+
+# --- dither injection through the carcontroller (safety invariant: clamped by the panda limiter) ---
+
+MAX_ANGLE_RATE = CoopSteeringCarControllerParams.ANGLE_LIMITS.MAX_ANGLE_RATE
+
+
+def test_dither_not_injected_unless_armed():
+  # coop on but the dither flag is OFF: a standstill hands-off output is the plain baseline (no dither)
+  c = CoopSteeringCarController()
+  cp_sp, cs = _cp_sp(coop=True, dither=False), _cs(steering_torque=0.0, v_ego=0.0)
+  outs = [c.update(0.0, True, cp_sp, cs, VM).steeringAngleDeg for _ in range(100)]
+  assert all(abs(o) < 1e-6 for o in outs)
+  assert not c.dither_active_last
+
+
+def test_dither_injected_when_armed_and_clamped():
+  # coop + dither armed, standstill + hands-off: a bounded oscillation is injected, and every frame
+  # stays within the configured amplitude AND the panda per-frame angle-rate limit (clamp invariant)
+  c = CoopSteeringCarController()
+  cp_sp, cs = _cp_sp(coop=True, dither=True), _cs(steering_torque=0.0, v_ego=0.0)
+  outs = [c.update(0.0, True, cp_sp, cs, VM).steeringAngleDeg for _ in range(120)]
+  assert max(abs(o) for o in outs) > 0.05                      # the dither actually moved the angle
+  assert max(abs(o) for o in outs) <= DITHER_AMP_DEG + 1e-6    # within the configured amplitude
+  deltas = [abs(b - a) for a, b in zip(outs[:-1], outs[1:], strict=True)]
+  assert max(deltas) <= MAX_ANGLE_RATE + 1e-6                  # within the panda per-frame angle-rate limit
+
+
+def test_dither_inert_when_moving():
+  # armed but above the standstill ceiling: no dither (a wiggle at speed would deviate the path)
+  c = CoopSteeringCarController()
+  cp_sp, cs = _cp_sp(coop=True, dither=True), _cs(steering_torque=0.0, v_ego=5.0)
+  for _ in range(60):
+    c.update(0.0, True, cp_sp, cs, VM)
+  assert not c.dither_active_last
+
+
+def test_dither_aborts_on_driver_touch():
+  # injecting at standstill, then the driver grabs the wheel -> the dither aborts within the window
+  c = CoopSteeringCarController()
+  cp_sp = _cp_sp(coop=True, dither=True)
+  for _ in range(DITHER_RAMP_FRAMES + 10):
+    c.update(0.0, True, cp_sp, _cs(steering_torque=0.0, v_ego=0.0), VM)
+  assert c.dither_active_last
+  for _ in range(DITHER_ABORT_FRAMES + 2):
+    c.update(0.0, True, cp_sp, _cs(steering_torque=3.0, v_ego=0.0), VM)  # hands ON
+  assert not c.dither_active_last
