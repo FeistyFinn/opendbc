@@ -64,6 +64,15 @@ class TestTeslaSafetyBase(common.CarSafetyTest, common.AngleSteeringSafetyTest, 
   def _get_steer_cmd_angle_max(self, speed):
     return get_max_angle_vm(max(speed, 1), self.VM, CarControllerParams)
 
+  def test_no_disengage_on_gas(self):
+    # Tesla keeps longitudinal actuation available during gas override (cooperative driving),
+    # unlike the base behavior which blocks longitudinal while the gas pedal is pressed.
+    self._rx(self._user_gas_msg(0))
+    self.safety.set_controls_allowed(True)
+    self._rx(self._user_gas_msg(self.GAS_PRESSED_THRESHOLD + 1))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.get_longitudinal_allowed())
+
   def setUp(self):
     self.VM = VehicleModel(get_safety_CP())
     self.packer = CANPackerSafety("tesla_model3_party")
@@ -116,8 +125,8 @@ class TestTeslaSafetyBase(common.CarSafetyTest, common.AngleSteeringSafetyTest, 
     return self.packer.make_can_msg_safety("ESP_B", 0, values)
 
   def _user_gas_msg(self, gas):
-    values = {"DI_accelPedalPos": gas}
-    return self.packer.make_can_msg_safety("DI_systemStatus", 0, values)
+    values = {"DI_accelPedalPressed": gas > 0}
+    return self.packer.make_can_msg_safety("DI_speed", 0, values)
 
   def _pcm_status_msg(self, enable, autopark_state=0):
     values = {
