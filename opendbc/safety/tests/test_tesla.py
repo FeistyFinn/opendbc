@@ -502,9 +502,61 @@ class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
     self.safety.set_safety_hooks(CarParams.SafetyModel.tesla, 0)
     self.safety.init_tests()
 
-  def _lkas_button_msg(self, enabled):
-    values = {"UI_activeTouchPoints": 3 if enabled else 0}
+  def _touch_msg(self, touch_points: int):
+    values = {"UI_activeTouchPoints": touch_points}
     return self.packer_adas.make_can_msg_safety("UI_status2", CANBUS.vehicle, values)
+
+  def _lkas_button_msg(self, enabled):
+    # Default class is the legacy 3-finger count; a "press" lands on 3 touch points.
+    return self._touch_msg(3 if enabled else 0)
+
+  def _set_mads_fingers(self, fingers, param_bit):
+    # Re-init the Tesla safety mode with the MADS-toggle finger count threaded over the SP safety param,
+    # exactly as pandad does at runtime (current_safety_param_sp).
+    self.safety.set_current_safety_param_sp(TeslaSafetyFlagsSP.HAS_VEHICLE_BUS | param_bit)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.tesla, 0)
+    self.safety.init_tests()
+
+  def _gesture_grants_lateral(self, touch_points):
+    # MADS enabled; one gesture: armed (0) -> land on `touch_points` -> fingers lifted (0).
+    self.safety.set_mads_params(True, False, False)
+    self.safety.set_controls_allowed_lateral(False)
+    self.safety.set_controls_requested_lateral(False)
+    self.safety.set_mads_button_press(-1)
+    self._rx(self._touch_msg(0))
+    self._rx(self._touch_msg(touch_points))
+    self._rx(self._touch_msg(0))
+    return self.safety.get_controls_allowed_lateral()
+
+  def test_mads_button_finger_count(self):
+    """The panda grants the MADS button when active touch points reach the configured count using
+    `>=` (matching openpilot's carstate_ext gesture), threaded via current_safety_param_sp -- NOT an
+    exact `== 3`. The exact match desynced on the noisy, value-skipping touch signal (a tap can jump
+    straight past its target) while openpilot went MADS-active -> the controlsMismatchLateral storm.
+    Parametrized over every configured count {3,4,5} and every touch count 0..6."""
+    cases = [
+      (3, 0),
+      (4, TeslaSafetyFlagsSP.MADS_TOGGLE_FINGERS_4),
+      (5, TeslaSafetyFlagsSP.MADS_TOGGLE_FINGERS_5),
+    ]
+    for n, param_bit in cases:
+      self._set_mads_fingers(n, param_bit)
+      for touch_points in range(7):
+        with self.subTest(fingers=n, touch_points=touch_points):
+          self.assertEqual(touch_points >= n, self._gesture_grants_lateral(touch_points),
+                           f"fingers={n} touch={touch_points}: expected grant={touch_points >= n}")
+
+  def test_mads_button_storm_regression(self):
+    """Real storm vector from an on-device route (menu set to 3 fingers): the
+    "3-finger" taps registered on the capacitive screen as 4-5 touch points and never as exactly 3
+    (seg 2's touch counts were only {4, 5}). openpilot fired on `>= 3` and went MADS-active, but the
+    old exact `== 3` never matched -> controlsMismatchLateral ("TAKE CONTROL") 2.0s after each engage.
+    With `>= 3` the 0 -> 5 jump grants cleanly; a tap that only reaches 2 still does not grant."""
+    self._set_mads_fingers(3, 0)
+    self.assertTrue(self._gesture_grants_lateral(5),
+                    "0->5 touch jump must grant lateral with >= N (regression: old == 3 failed)")
+    self.assertFalse(self._gesture_grants_lateral(2),
+                     "a tap reaching only 2 points must not grant lateral at N=3")
 
 
 if __name__ == "__main__":
