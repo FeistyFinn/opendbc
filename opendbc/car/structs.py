@@ -183,3 +183,4 @@ class CarStateSP:
     tauIntent: float = auto_field()
     inertiaJUsed: float = auto_field()
     angleOverride: float = auto_field()
+    blendedAngleDeg: float = auto_field()
