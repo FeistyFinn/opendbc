@@ -140,7 +140,7 @@ static void tesla_rx_hook(const CANPacket_t *msg) {
       update_sample(&angle_meas, angle_meas_new);
 
       const int hands_on_level = msg->data[4] >> 6;  // EPAS3S_handsOnLevel
-      const int torsion_bar_torque = (((msg->data[2] & 0x0FU) << 8) | msg->data[3]) - 2050;  // EPAS3S_torsionBarTorque in 0.01 Nm
+      const int torsion_bar_torque = (((msg->data[2] & 0x0FU) << 8) | msg->data[3]) - 2050U;  // EPAS3S_torsionBarTorque in 0.01 Nm
       const int eac_status = msg->data[6] >> 5;  // EPAS3S_eacStatus
       const int eac_error_code = msg->data[2] >> 4;  // EPAS3S_eacErrorCode
 
@@ -274,17 +274,14 @@ static bool tesla_tx_hook(const CANPacket_t *msg) {
     int desired_angle = raw_angle_can - 16384;
     int steer_control_type = msg->data[2] >> 6;
     const int angle_ctrl_type = tesla_get_steer_ctrl_type(1);
-    const int lkas_ctrl_type = tesla_get_steer_ctrl_type(2);
-    bool steer_control_enabled = (steer_control_type == angle_ctrl_type) ||  // ANGLE_CONTROL
-                                 (steer_control_type == lkas_ctrl_type);     // LANE_KEEP_ASSIST
+    bool steer_control_enabled = steer_control_type == angle_ctrl_type;  // ANGLE_CONTROL
 
     if (steer_angle_cmd_checks_vm(desired_angle, steer_control_enabled, TESLA_STEERING_LIMITS, TESLA_STEERING_PARAMS)) {
       violation = true;
     }
 
-    bool valid_steer_control_type = (steer_control_type == 0) ||                // NONE
-                                    (steer_control_type == angle_ctrl_type) ||  // ANGLE_CONTROL
-                                    (steer_control_type == lkas_ctrl_type);     // LANE_KEEP_ASSIST
+    bool valid_steer_control_type = (steer_control_type == 0) ||  // NONE
+                                    (steer_control_type == angle_ctrl_type);    // ANGLE_CONTROL
     if (!valid_steer_control_type) {
       violation = true;
     }
