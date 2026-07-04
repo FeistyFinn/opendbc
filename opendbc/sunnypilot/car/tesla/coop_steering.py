@@ -45,9 +45,8 @@ STEER_OVERRIDE_MAX_LAT_ACCEL = 2.0 # m/s^2 - determines angle rate - speed depen
 STEER_OVERRIDE_TARGET_ANGLE_MAX = CarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX  # deg
 
 # override angle ramp control.
-# 125 == MAX_ANGLE_RATE / DT_LAT_CTRL / STEER_OVERRIDE_TORQUE_RANGE (5 / 0.02 / 2.0) -- i.e. exactly the
-# internal per-Nm ceiling that calc_override_angle_delta_limit already enforces, so this gain sits AT the
-# cap. If a future change lowers MAX_ANGLE_RATE, raises STEER_STEP, or widens the torque range, revisit it.
+# 125 == MAX_ANGLE_RATE / DT_LAT_CTRL / STEER_OVERRIDE_TORQUE_RANGE (5 / 0.02 / 2.0), i.e. exactly the
+# internal per-Nm ceiling that calc_override_angle_delta_limit enforces, so this gain sits at that cap.
 STEER_OVERRIDE_DELTA_GAIN_LIMIT = 125 # deg/s/Nm
 
 
@@ -68,14 +67,6 @@ def apply_bounds(signal: float, limit: float) -> float:
 def apply_deadzone(signal: float, deadzone: float) -> float:
   """Apply deadzone to input."""
   return signal - apply_bounds(signal, deadzone)
-
-
-def calc_override_angle_limited(torque: float, vEgo: float, VM: VehicleModel, lat_accel) -> float:
-  """
-  Map driver torque to lateral acceleration and convert to steering angle.
-  """
-
-  return torque * get_override_torque_to_angle(vEgo, VM, lat_accel)
 
 
 def get_override_torque_to_angle(vEgo: float, VM: VehicleModel, lat_accel: float) -> float:
@@ -179,10 +170,7 @@ class CoopSteeringCarController:
 
     hold_torque_delta = driver_torque_with_deadzone - holding_torque
 
-    # Symmetric per-frame rate limit. This was previously a dual away/center gain, but both branches
-    # evaluated to the same value (STEER_OVERRIDE_DELTA_GAIN_LIMIT and the centering gain both reduce to
-    # 125 deg/s/Nm via calc_override_angle_delta_limit's internal cap), so the asymmetry was a no-op.
-    # Reviving "center faster than deflect" requires LOWERING the away gain here, not re-adding a branch.
+    # Symmetric per-frame rate limit on the override delta (deflect and center bounded equally).
     delta_limit = calc_override_angle_delta_limit(abs(hold_torque_delta), STEER_OVERRIDE_DELTA_GAIN_LIMIT)
     angle_override_delta = float(np.clip(target_error, -delta_limit, delta_limit))
 
