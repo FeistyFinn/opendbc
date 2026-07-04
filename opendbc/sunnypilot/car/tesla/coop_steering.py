@@ -24,7 +24,7 @@ STEER_RESUME_RATE_LIMIT_RAMP_RATE = 300 # deg/s^2
 class CoopSteeringCarControllerParams(CarControllerParams):
   ANGLE_LIMITS = replace(CarControllerParams.ANGLE_LIMITS, MAX_ANGLE_RATE=5)
 
-# angle override # todo implement steering torque inertia compensation to increase gains
+# angle override
 STEER_OVERRIDE_MIN_TORQUE = 0.5 # Nm - based on typical steering bias + noise - used for the deadzone
 STEER_OVERRIDE_MAX_TORQUE = 2.5 # Nm - typical torque before EPS disengages due to hands_on_level=3
 STEER_OVERRIDE_TORQUE_RANGE = STEER_OVERRIDE_MAX_TORQUE - STEER_OVERRIDE_MIN_TORQUE
@@ -32,9 +32,11 @@ STEER_OVERRIDE_TORQUE_RANGE = STEER_OVERRIDE_MAX_TORQUE - STEER_OVERRIDE_MIN_TOR
 STEER_OVERRIDE_MAX_LAT_ACCEL = 2.0 # m/s^2 - determines angle rate - speed dependent - similar to Tesla comfort steering mode
 STEER_OVERRIDE_TARGET_ANGLE_MAX = CarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX  # deg
 
-# override angle ramp control
+# override angle ramp control.
+# 125 == MAX_ANGLE_RATE / DT_LAT_CTRL / STEER_OVERRIDE_TORQUE_RANGE (5 / 0.02 / 2.0) -- i.e. exactly the
+# internal per-Nm ceiling that calc_override_angle_delta_limit already enforces, so this gain sits AT the
+# cap. If a future change lowers MAX_ANGLE_RATE, raises STEER_STEP, or widens the torque range, revisit it.
 STEER_OVERRIDE_DELTA_GAIN_LIMIT = 125 # deg/s/Nm
-STEER_OVERRIDE_DELTA_GAIN_LIMIT_CENTERING = CoopSteeringCarControllerParams.ANGLE_LIMITS.MAX_ANGLE_RATE / DT_LAT_CTRL / STEER_OVERRIDE_TORQUE_RANGE
 
 
 CoopSteeringDataSP = namedtuple("CoopSteeringDataSP",
@@ -104,18 +106,15 @@ class CoopSteeringCarController:
     self.angle_override = 0
     self.resume_rate_limiter_delta = SteerRateLimiter()
     self.resume_rate_limiter = SteerRateLimiter()
-    self.debug_angle_desired_limited = 0
 
   def reset_override_state(self, apply_angle: float) -> None:
     self.apply_angle_last = apply_angle
     self.angle_override = 0
     self.coop_apply_angle_sat_last = apply_angle
 
-  def update_override_angle(self, apply_angle_delta: float,
-                                         driver_torque: float, vEgo: float, VM: VehicleModel) -> float:
-    """
-    Update angle_override toward the driver torque target subject to torque-based rate limits.
-    """
+  def update_override_angle(self, apply_angle_delta: float, driver_torque: float,
+                            vEgo: float, VM: VehicleModel) -> float:
+    """Update angle_override toward the driver torque target subject to torque-based rate limits."""
     # Target angle
     driver_torque_with_deadzone = apply_deadzone(driver_torque, STEER_OVERRIDE_MIN_TORQUE)
     torque_to_angle = get_override_torque_to_angle(vEgo, VM, STEER_OVERRIDE_MAX_LAT_ACCEL)
@@ -130,13 +129,12 @@ class CoopSteeringCarController:
 
     hold_torque_delta = driver_torque_with_deadzone - holding_torque
 
-    delta_limit_away = calc_override_angle_delta_limit(abs(hold_torque_delta), STEER_OVERRIDE_DELTA_GAIN_LIMIT)
-    delta_limit_center = calc_override_angle_delta_limit(abs(hold_torque_delta), STEER_OVERRIDE_DELTA_GAIN_LIMIT_CENTERING)
-
-    down_step = delta_limit_center if self.angle_override > 0 else delta_limit_away
-    up_step = delta_limit_center if self.angle_override < 0 else delta_limit_away
-
-    angle_override_delta = float(np.clip(target_error, -down_step, up_step))
+    # Symmetric per-frame rate limit. This was previously a dual away/center gain, but both branches
+    # evaluated to the same value (STEER_OVERRIDE_DELTA_GAIN_LIMIT and the centering gain both reduce to
+    # 125 deg/s/Nm via calc_override_angle_delta_limit's internal cap), so the asymmetry was a no-op.
+    # Reviving "center faster than deflect" requires LOWERING the away gain here, not re-adding a branch.
+    delta_limit = calc_override_angle_delta_limit(abs(hold_torque_delta), STEER_OVERRIDE_DELTA_GAIN_LIMIT)
+    angle_override_delta = float(np.clip(target_error, -delta_limit, delta_limit))
 
     # subtract same-direction angle delta already applied upstream
     if angle_override_delta * apply_angle_delta > 0:
@@ -176,11 +174,10 @@ class CoopSteeringCarController:
       self.reset_override_state(apply_angle)
       return CoopSteeringDataSP(apply_angle, lat_active)
 
-    self.debug_angle_desired_limited = apply_angle #! debug
-
     apply_angle_delta = apply_angle - self.apply_angle_last
     self.apply_angle_last = apply_angle
-    apply_angle += self.update_override_angle(apply_angle_delta, CS.out.steeringTorque, CS.out.vEgo, VM)
+    apply_angle += self.update_override_angle(apply_angle_delta, CS.out.steeringTorque,
+                                              CS.out.vEgo, VM)
 
     # final rate limit - matching panda safety
     self.coop_apply_angle_sat_last = apply_steer_angle_limits_vm(apply_angle, self.coop_apply_angle_sat_last, CS.out.vEgoRaw,
