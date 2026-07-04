@@ -93,7 +93,7 @@ class CarState(CarStateBase, CarStateExt):
     # DI_autoparkState is used by Summon, not autopark (which uses DAS_autopilotState = ACTIVE_AUTOPARK)
     summon_state = self.can_define.dv["DI_state"]["DI_autoparkState"].get(int(cp_party.vl["DI_state"]["DI_autoparkState"]), None)
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
-    self.cruise_override = cruise_state in ("OVERRIDE")
+    self.cruise_override = cruise_state == "OVERRIDE"
     self.update_summon_state(summon_state, cruise_enabled)
 
     # Match panda safety cruise engaged logic
