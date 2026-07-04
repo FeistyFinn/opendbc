@@ -386,6 +386,8 @@ static safety_config tesla_init(uint16_t param) {
   tesla_stock_aeb = false;
   tesla_stock_lkas = false;
   tesla_stock_lkas_prev = false;
+  // Tesla keeps longitudinal actuation available during gas override (cooperative driving)
+  longitudinal_allowed_on_gas = true;
   // we need to assume Autopark/Summon on startup since DI_state is a low freq msg.
   // this is so that we don't fault if starting while these systems are active
   tesla_autopark = true;
