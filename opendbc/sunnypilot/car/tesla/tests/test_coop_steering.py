@@ -31,13 +31,12 @@ VM = VehicleModel(get_safety_CP())
 STEER_ANGLE_MAX = CoopSteeringCarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX
 
 
-def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0, steering_rate_deg=0.0):
+def _cs(steering_torque=0.0, v_ego=5.0, steering_angle=0.0):
   out = structs.CarState()
   out.vEgo = v_ego
   out.vEgoRaw = v_ego
   out.steeringAngleDeg = steering_angle
   out.steeringTorque = steering_torque
-  out.steeringRateDeg = steering_rate_deg
   return SimpleNamespace(out=out)
 
 
@@ -149,7 +148,7 @@ def test_release_resets_override_to_input_angle():
 
 
 # ============================================================================
-# Baseline-algorithm coverage added for upstreaming (cards #4 / #5 / #6 / #7 / #10).
+# Baseline-algorithm coverage (rate-gain collapse, high-speed, offset envelope, moving planner, transitions).
 # ============================================================================
 
 
@@ -163,11 +162,11 @@ def _run_moving_planner(cp_sp, torque, v_ego, planner_step, frames):
   return c
 
 
-# --- #10: away/center rate gains collapsed to one symmetric limit ---
+# --- rate gain: away/center gains collapsed to one symmetric limit ---
 
 def test_symmetric_ramp_no_directional_asymmetry():
   # + and - torque of equal magnitude must produce exact mirror-image override trajectories, frame by
-  # frame -- proving the ramp has no directional (away-vs-center) asymmetry after the #10 collapse.
+  # frame -- proving the ramp has no directional (away-vs-center) asymmetry after the collapse.
   cp_sp = _cp_sp(coop=True)
   pos, neg = CoopSteeringCarController(), CoopSteeringCarController()
   for _ in range(60):
@@ -176,7 +175,7 @@ def test_symmetric_ramp_no_directional_asymmetry():
     assert abs(p + n) < 1e-6
 
 
-# --- #5: high-speed behavior (all legacy tests use v_ego = 5) ---
+# --- high-speed behavior (all legacy tests use v_ego = 5) ---
 
 @pytest.mark.parametrize("v_ego", [5.0, 15.0, 30.0])
 def test_settles_to_vm_predicted_offset_at_speed(v_ego):
@@ -201,7 +200,7 @@ def test_release_returns_to_zero_at_speed(v_ego):
   assert abs(out.steeringAngleDeg) < 0.5
 
 
-# --- #7: speed-dependent max-offset envelope ---
+# --- speed-dependent max-offset envelope ---
 
 def test_offset_envelope_monotone_nonincreasing():
   # At max torque, the settled offset is largest at the 1 m/s floor and monotone NON-increasing with
@@ -217,7 +216,7 @@ def test_offset_envelope_monotone_nonincreasing():
   assert all(o <= STEER_OVERRIDE_TARGET_ANGLE_MAX + 1e-6 for o in offsets)
 
 
-# --- #4: interaction with a MOVING planner (the double-count branch, spec'd by #11) ---
+# --- interaction with a MOVING planner (the double-count / same-direction-subtraction branch) ---
 
 def test_moving_planner_same_dir_subtracts_opposite_keeps_authority():
   # Planner moving the SAME way as the override -> its delta is subtracted (no double-count) so the
@@ -250,7 +249,7 @@ def test_moving_planner_reversal_keeps_override_continuous():
   assert max_jump <= CoopSteeringCarControllerParams.ANGLE_LIMITS.MAX_ANGLE_RATE + 1e-6
 
 
-# --- #6: engage/disengage transitions (the resume rate limiter) ---
+# --- engage/disengage transitions (the resume rate limiter) ---
 
 def test_resume_ramp_acceleration_builds():
   # On re-engage with a jumping planner angle and no driver torque, the resume rate limiter caps the
