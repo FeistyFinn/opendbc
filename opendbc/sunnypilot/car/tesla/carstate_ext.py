@@ -95,6 +95,7 @@ class CarStateExt:
       sp.tauIntent = float(coop_steer.tau_intent_last)
       sp.inertiaJUsed = float(coop_steer.inertia_j_used)
       sp.angleOverride = float(coop_steer.angle_override)
+      sp.blendedAngleDeg = float(coop_steer.coop_apply_angle_sat_last)  # delivered angle (post-saturation)
     except Exception:  # telemetry must never break carstate
       pass
 

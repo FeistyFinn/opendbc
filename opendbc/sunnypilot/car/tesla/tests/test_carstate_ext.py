@@ -112,13 +112,16 @@ def test_coop_steering_telemetry_populates_carstatesp():
 
   # carcontroller stashes its coop_steer (faked)
   ext.coop_steering_debug = SimpleNamespace(alpha_filt_last=3.2, tau_inertia_last=0.25,
-                                            tau_intent_last=1.75, inertia_j_used=0.08, angle_override=4.1)
+                                            tau_intent_last=1.75, inertia_j_used=0.08, angle_override=4.1,
+                                            coop_apply_angle_sat_last=6.3)
   ret_sp = structs.CarStateSP()
   ext.update_coop_steering_sp(ret_sp)
   c = ret_sp.coopSteering
   # coop on -> FF logged in shadow; never applied live
   assert c.coopActive and c.shadowActive and not c.inertiaCompActive
   assert abs(c.alphaFilt - 3.2) < 1e-6 and abs(c.inertiaJUsed - 0.08) < 1e-6 and abs(c.angleOverride - 4.1) < 1e-6
+  # delivered (post-saturation) angle -- distinct from the raw offset
+  assert abs(c.blendedAngleDeg - 6.3) < 1e-6 and c.blendedAngleDeg != c.angleOverride
 
   # coop off -> not active, not shadow
   ext.CP_SP.flags &= ~TeslaFlagsSP.COOP_STEERING.value
