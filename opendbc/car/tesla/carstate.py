@@ -21,6 +21,7 @@ class CarState(CarStateBase, CarStateExt):
 
     self.autopark = False
     self.autopark_prev = False
+    self.cruise_override = False
     self.cruise_enabled_prev = False
     self.fsd14_error_logged = False
     self.suspected_fsd14 = False
@@ -78,6 +79,7 @@ class CarState(CarStateBase, CarStateExt):
 
     autopark_state = self.can_define.dv["DI_state"]["DI_autoparkState"].get(int(cp_party.vl["DI_state"]["DI_autoparkState"]), None)
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
+    self.cruise_override = cruise_state in ("OVERRIDE")
     self.update_autopark_state(autopark_state, cruise_enabled)
 
     # Match panda safety cruise engaged logic
