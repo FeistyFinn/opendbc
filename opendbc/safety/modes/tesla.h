@@ -36,7 +36,7 @@ bool tesla_has_vehicle_bus = false;
 // MADS infotainment-screen toggle: grant the MADS button when active touch points reach this count.
 // Threaded from openpilot via current_safety_param_sp so it matches carstate_ext's `>= N` gesture
 // (default 3 keeps legacy behavior). Compared against the (noisy) touch count with `>=`, not `==`.
-static uint8_t tesla_mads_toggle_fingers = 3U;
+static uint8_t tesla_mads_toggle_fingers = 3;
 
 static uint8_t tesla_get_counter(const CANPacket_t *msg) {
 
@@ -392,14 +392,14 @@ static safety_config tesla_init(uint16_t param) {
   tesla_has_vehicle_bus = GET_FLAG(current_safety_param_sp, TESLA_PARAM_SP_VEHICLE_BUS);
 
   // MADS-toggle finger count: 2-bit field (mirrors openpilot's TeslaSafetyFlagsSP), 00->3, 01->4, 10->5.
-  const uint16_t TESLA_PARAM_SP_MADS_FINGERS_4 = 2U;
-  const uint16_t TESLA_PARAM_SP_MADS_FINGERS_5 = 4U;
+  const uint16_t TESLA_PARAM_SP_MADS_FINGERS_4 = 2;
+  const uint16_t TESLA_PARAM_SP_MADS_FINGERS_5 = 4;
   if (GET_FLAG(current_safety_param_sp, TESLA_PARAM_SP_MADS_FINGERS_5)) {
-    tesla_mads_toggle_fingers = 5U;
+    tesla_mads_toggle_fingers = 5;
   } else if (GET_FLAG(current_safety_param_sp, TESLA_PARAM_SP_MADS_FINGERS_4)) {
-    tesla_mads_toggle_fingers = 4U;
+    tesla_mads_toggle_fingers = 4;
   } else {
-    tesla_mads_toggle_fingers = 3U;
+    tesla_mads_toggle_fingers = 3;
   }
 
   tesla_stock_aeb = false;

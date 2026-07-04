@@ -20,7 +20,6 @@ class CarStateExt:
     self.CP = CP
     self.CP_SP = CP_SP
 
-    self.infotainment_touch_points_active = 0
     self.mads_gesture_armed = True
     if CP_SP.flags & TeslaFlagsSP.MADS_TOGGLE_FINGERS_5:
       self.mads_toggle_fingers = 5
@@ -38,7 +37,6 @@ class CarStateExt:
     a spurious unknown ButtonEvent for every other count, so a real N-finger tap (whose count bounces
     e.g. 4<->5 while held) re-fired lkas on every bounce -> rapid MADS toggle -> the MADS/panda state
     diverged and controlsMismatchLateral fired (TAKE CONTROL + siren)."""
-    self.infotainment_touch_points_active = touch_points
     if touch_points == 0:
       self.mads_gesture_armed = True
     elif touch_points >= self.mads_toggle_fingers and self.mads_gesture_armed:
