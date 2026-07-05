@@ -13,7 +13,6 @@ uint32_t wake_on_can_cnt = 0U;
 void ignition_can_hook(const CANPacket_t *msg) {
   if (msg->bus == 0U) {
     int len = GET_LEN(msg);
-    static int tesla_gear = -1;
     static bool tesla_seatbelt_latched = false;
     static bool tesla_door_open = false;
 
@@ -54,12 +53,14 @@ void ignition_can_hook(const CANPacket_t *msg) {
     }
 
     // Tesla Model 3/Y exception - drive gears -> ignition
+    // 0x118 (DI_systemStatus) is a common CAN id shared by other brands; the counter-gate plus the
+    // drive-gear value check (2/3/4) guard against a non-Tesla frame spuriously setting ignition.
     if ((msg->addr == 0x118U) && (len == 8)) {
       int counter = msg->data[1] & 0x0FU;
 
       static int prev_counter_tesla_gear = -1;
       if ((counter == ((prev_counter_tesla_gear + 1) % 16)) && (prev_counter_tesla_gear != -1)) {
-        tesla_gear = (msg->data[2] >> 5) & 0x7;
+        int tesla_gear = (msg->data[2] >> 5) & 0x7;
         if ((tesla_gear == 2) || (tesla_gear == 3) || (tesla_gear == 4)) {
           ignition_can = true;
         }

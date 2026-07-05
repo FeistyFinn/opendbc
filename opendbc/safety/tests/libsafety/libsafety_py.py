@@ -119,6 +119,7 @@ int mutation_get_active_mutant(void);
 
 void ignition_can_hook(const CANPacket_t *msg);
 bool get_ignition_can(void);
+bool get_wake_on_can(void);
 void set_ignition_can(bool c);
 
 bool get_controls_allowed_lateral(void);
