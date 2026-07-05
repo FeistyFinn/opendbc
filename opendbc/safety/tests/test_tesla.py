@@ -506,6 +506,11 @@ class TestTeslaIgnition(unittest.TestCase):
                                             "buckleStatus": 1 if buckled else 0,
                                             "anyDoorOpen": 1 if door_open else 0})
 
+  def _lv_msg(self, counter, power_state):
+    return self.packer.make_can_msg_safety("VCFRONT_LVPowerState", 0,
+                                           {"VCFRONT_LVPowerStateCounter": counter,
+                                            "VCFRONT_vehiclePowerState": power_state})
+
   # DI_gear=4 (D) -> ignition on (counter-gated)
   def test_ignition_on_drive(self):
     for i in range(16):
@@ -566,6 +571,22 @@ class TestTeslaIgnition(unittest.TestCase):
     self.safety.ignition_can_hook(self._gear_msg(4, 1))
     self.safety.ignition_can_hook(self._gear_msg(5, 1))
     self.assertFalse(self.safety.get_ignition_can())
+
+  # 0x221 VCFRONT_LVPowerState is decoupled from ignition (now drives wake_on_can only) - regression guard
+  def test_lv_power_state_does_not_set_ignition(self):
+    self.safety.ignition_can_hook(self._lv_msg(0, 3))  # VEHICLE_POWER_STATE_DRIVE
+    self.safety.ignition_can_hook(self._lv_msg(1, 3))
+    self.assertFalse(self.safety.get_ignition_can())
+
+  # 0x221 non-OFF power state sets wake_on_can (counter-gated), independent of ignition
+  def test_wake_on_can(self):
+    for power_state, expected in ((0, False), (1, True), (2, True), (3, True)):
+      self.safety.init_tests()
+      self.safety.ignition_can_hook(self._lv_msg(0, power_state))
+      self.assertFalse(self.safety.get_wake_on_can())
+      self.safety.ignition_can_hook(self._lv_msg(1, power_state))
+      self.assertEqual(self.safety.get_wake_on_can(), expected)
+      self.assertFalse(self.safety.get_ignition_can())
 
 
 class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
