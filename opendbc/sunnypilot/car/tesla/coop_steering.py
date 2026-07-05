@@ -88,14 +88,6 @@ def apply_deadzone(signal: float, deadzone: float) -> float:
   return signal - apply_bounds(signal, deadzone)
 
 
-def calc_override_angle_limited(torque: float, vEgo: float, VM: VehicleModel, lat_accel) -> float:
-  """
-  Map driver torque to lateral acceleration and convert to steering angle.
-  """
-
-  return torque * get_override_torque_to_angle(vEgo, VM, lat_accel)
-
-
 def get_override_torque_to_angle(vEgo: float, VM: VehicleModel, lat_accel: float) -> float:
   """
   Convert effective override torque to steering angle gain.
@@ -322,6 +314,11 @@ class CoopSteeringCarController:
     # the panda-matched limiter below -- so a generator bug can never exceed the per-frame angle/jerk
     # limit. Gated to standstill + hands-off; aborts on driver touch / rollaway (see DitherCalibrator).
     dither_armed = bool(CP_SP.flags & TeslaFlagsSP.COOP_STEERING_DITHER_CALIB_ALPHA.value)
+    # NOTE: hands_off reads the torsion bar, which is also the signal the dither excites -- the dither's
+    # own reaction torque feeds this guard. At DITHER_AMP_DEG=0.2deg over 1.5-5.5Hz with J in [0.08, 0.15]
+    # the upper-column inertia reaction peaks ~0.15-0.28 Nm, comfortably under STEER_OVERRIDE_MIN_TORQUE
+    # (0.5 Nm), so a genuine hands-off run is not expected to self-abort. If DITHER_AMP_DEG is ever raised,
+    # re-check this margin (or give the dither guard a dedicated higher threshold) so it can't trip on itself.
     hands_off = (not CS.out.steeringPressed) and abs(CS.out.steeringTorque) < STEER_OVERRIDE_MIN_TORQUE
     standstill = abs(CS.out.vEgo) < DITHER_V_CEIL
     self.dither_active_last, self.dither_command_last = self.dither.update(dither_armed, lat_active, standstill, hands_off)

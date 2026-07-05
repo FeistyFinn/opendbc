@@ -318,6 +318,31 @@ def test_dither_one_run_per_arming_latches_then_rearms():
   assert cal.finished and not cal.active
   acts, cmds = _drive_dither(cal, 50)
   assert not any(acts) and all(c == 0.0 for c in cmds)   # still armed -> stays inert (one run)
+
+
+def test_dither_natural_completion_ramps_out_slow():
+  # at the duration cap (precond still held) the envelope ramps out over the SLOW window
+  # (DITHER_RAMP_FRAMES), distinct from the fast abort window -- guards the graceful-vs-abort rates
+  cal = DitherCalibrator()
+  _drive_dither(cal, DITHER_MAX_FRAMES)
+  assert cal.active and cal.env > 0.99
+  # a fast (abort-rate) ramp-out would already be at 0 by now; still ramping -> it is the slow path
+  _drive_dither(cal, DITHER_ABORT_FRAMES + 1)
+  assert cal.active and cal.env > 0.0
+  # it completes within ~DITHER_RAMP_FRAMES more and then latches finished (natural completion)
+  _drive_dither(cal, DITHER_RAMP_FRAMES)
+  assert cal.finished and not cal.active
+
+
+def test_dither_aborts_on_rollaway():
+  # a mid-run rollaway (vEgo rises above the standstill ceiling) aborts fast, like a driver touch,
+  # and does NOT latch -> the run can retry once the car is stationary again
+  cal = DitherCalibrator()
+  _drive_dither(cal, DITHER_RAMP_FRAMES + 10)
+  assert cal.active and cal.env > 0.99
+  _drive_dither(cal, DITHER_ABORT_FRAMES + 1, standstill=False)
+  assert not cal.active and cal.env == 0.0
+  assert not cal.finished
   cal.update(False, True, True, True)                    # disarm one frame
   assert not cal.finished
   acts2, _ = _drive_dither(cal, DITHER_RAMP_FRAMES + 5)
