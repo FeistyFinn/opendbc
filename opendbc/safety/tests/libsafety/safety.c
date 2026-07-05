@@ -98,6 +98,10 @@ bool get_ignition_can(void){
   return ignition_can;
 }
 
+bool get_wake_on_can(void){
+  return wake_on_can;
+}
+
 bool get_relay_malfunction(void){
   return relay_malfunction;
 }
@@ -351,6 +355,8 @@ void init_tests(void){
 
   ignition_can = false;
   ignition_can_cnt = 0U;
+  wake_on_can = false;
+  wake_on_can_cnt = 0U;
 
   // reset MADS state to prevent leaking between tests
   mads_set_system_state(false, false, false);
