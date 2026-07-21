@@ -175,12 +175,17 @@ def test_gas_scroll_combo_emits_one_gap_adjust():
   # gas + scroll pressed while cruise is enabled -> exactly one gapAdjustCruise press on the rising
   # edge, and none while the combo is held (rising-edge only, no re-fire).
   ext = _ext_no_vehicle_bus()
-  ret, ret_sp = structs.CarState(), structs.CarStateSP()
+  ret_sp = structs.CarStateSP()
+  # each frame is a FRESH CarState (the base rebuilds it every cycle); only ext state persists.
+  ret = structs.CarState()
   ret.gasPressed = True
   ret.cruiseState.enabled = True
   ext.update(ret, ret_sp, _parsers(scroll=1))
   assert _gap_presses(ret) == 1
-  ext.update(ret, ret_sp, _parsers(scroll=1))  # held
+  ret = structs.CarState()  # next frame, combo still held
+  ret.gasPressed = True
+  ret.cruiseState.enabled = True
+  ext.update(ret, ret_sp, _parsers(scroll=1))
   assert _gap_presses(ret) == 0
 
 
@@ -199,3 +204,18 @@ def test_gas_scroll_combo_requires_cruise_and_gas():
   ext2 = _ext_no_vehicle_bus()
   ext2.update(ret2, ret_sp, _parsers(scroll=1))
   assert _gap_presses(ret2) == 0
+
+
+def test_update_preserves_base_button_events():
+  # ext.update() runs AFTER base carstate.py has already populated ret.buttonEvents (e.g. the ACC
+  # cancel emitted on DAS_accState->13). It must APPEND its scroll/gap events, not replace the list,
+  # or the stock cancel/disengage ButtonEvent is dropped before it reaches controls.
+  ext = _ext_no_vehicle_bus()
+  ret, ret_sp = structs.CarState(), structs.CarStateSP()
+  ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=True, type=ButtonType.cancel)]
+  ret.gasPressed = True
+  ret.cruiseState.enabled = True
+  ext.update(ret, ret_sp, _parsers(scroll=1))
+  types = [be.type for be in ret.buttonEvents]
+  assert ButtonType.cancel in types            # base ACC-cancel preserved (regression guard)
+  assert ButtonType.gapAdjustCruise in types   # ext gap-adjust appended alongside
