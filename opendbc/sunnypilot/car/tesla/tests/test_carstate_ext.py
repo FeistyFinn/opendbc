@@ -6,7 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 from types import SimpleNamespace
 
-from opendbc.car import structs
+from opendbc.car import Bus, structs
+from opendbc.can import CANDefine
 from opendbc.sunnypilot.car.tesla.carstate_ext import CarStateExt
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 
@@ -124,3 +125,67 @@ def test_coop_steering_telemetry_populates_carstatesp():
   # a malformed debug object must never raise (telemetry is best-effort)
   ext.coop_steering_debug = SimpleNamespace()  # missing attrs
   ext.update_coop_steering_sp(structs.CarStateSP())
+
+
+# --- scroll-wheel genericToggle + gas+scroll gap-adjust combo (drives the full update() path) ---
+
+def _ext_no_vehicle_bus() -> CarStateExt:
+  # CarStateExt without the vehicle bus, so update() skips the infotainment N-finger path and only the
+  # party-bus scroll-wheel logic runs. Inject the real party CANDefine the way the mixed CarState does.
+  cp_sp = structs.CarParamsSP()
+  cp_sp.flags = 0
+  ext = CarStateExt(structs.CarParams(), cp_sp)
+  ext.can_define = CANDefine("tesla_model3_party")
+  return ext
+
+
+def _parsers(scroll: int):
+  # Minimal fake CAN parsers with the .vl entries update() reads (speed-limit + scroll wheel).
+  return {
+    Bus.party: SimpleNamespace(vl={"DI_state": {"DI_speedUnits": 0},
+                                   "UI_warning": {"scrollWheelPressed": scroll}}),
+    Bus.ap_party: SimpleNamespace(vl={"DAS_status": {"DAS_fusedSpeedLimit": 0}}),
+  }
+
+
+def test_generic_toggle_tracks_scroll_wheel():
+  ext = _ext_no_vehicle_bus()
+  ret, ret_sp = structs.CarState(), structs.CarStateSP()
+  ext.update(ret, ret_sp, _parsers(scroll=0))
+  assert not ret.genericToggle
+  ext.update(ret, ret_sp, _parsers(scroll=1))
+  assert ret.genericToggle
+
+
+def _gap_presses(ret) -> int:
+  return sum(1 for be in ret.buttonEvents if be.pressed and be.type == ButtonType.gapAdjustCruise)
+
+
+def test_gas_scroll_combo_emits_one_gap_adjust():
+  # gas + scroll pressed while cruise is enabled -> exactly one gapAdjustCruise press on the rising
+  # edge, and none while the combo is held (rising-edge only, no re-fire).
+  ext = _ext_no_vehicle_bus()
+  ret, ret_sp = structs.CarState(), structs.CarStateSP()
+  ret.gasPressed = True
+  ret.cruiseState.enabled = True
+  ext.update(ret, ret_sp, _parsers(scroll=1))
+  assert _gap_presses(ret) == 1
+  ext.update(ret, ret_sp, _parsers(scroll=1))  # held
+  assert _gap_presses(ret) == 0
+
+
+def test_gas_scroll_combo_requires_cruise_and_gas():
+  # No gap-adjust when cruise is disabled (or gas released), even with the scroll wheel pressed.
+  ret, ret_sp = structs.CarState(), structs.CarStateSP()
+  ret.gasPressed = True
+  ret.cruiseState.enabled = False
+  ext = _ext_no_vehicle_bus()
+  ext.update(ret, ret_sp, _parsers(scroll=1))
+  assert _gap_presses(ret) == 0
+
+  ret2 = structs.CarState()
+  ret2.gasPressed = False
+  ret2.cruiseState.enabled = True
+  ext2 = _ext_no_vehicle_bus()
+  ext2.update(ret2, ret_sp, _parsers(scroll=1))
+  assert _gap_presses(ret2) == 0
