@@ -24,6 +24,7 @@ from opendbc.sunnypilot.car.tesla.coop_steering import (
   STEER_INERTIA_J_MAX,
   STEER_INERTIA_TORQUE_LIMIT,
   STEER_OVERRIDE_MIN_TORQUE,
+  STEER_OVERRIDE_TORQUE_RANGE,
   STEER_OVERRIDE_MAX_LAT_ACCEL,
   STEER_OVERRIDE_TARGET_ANGLE_MAX,
   STEER_RESUME_RATE_LIMIT_RAMP_RATE,
@@ -335,8 +336,11 @@ def test_offset_envelope_monotone_nonincreasing():
 
 def test_moving_planner_same_dir_subtracts_opposite_keeps_authority():
   # Planner moving the SAME way as the override -> its delta is subtracted (no double-count) so the
-  # accumulated override is smaller than with a still planner. Planner moving OPPOSITE -> no subtraction,
-  # full authority (identical to a still planner, which never triggers the branch). Never sign-flips.
+  # accumulated override is smaller than with a still planner. Planner moving OPPOSITE -> the override
+  # grows against the planner during the transient (dzid26's opposing-consume branch; see
+  # test_moving_planner_opposite_grows_override_transient), but both converge to the same torque->angle
+  # target, so at STEADY STATE the opposing-planner override matches the still-planner baseline. The
+  # consume branch is dormant once the slew is ~0. Never sign-flips.
   cp_sp = _cp_sp(coop=True)
   still = CoopSteeringCarController()
   _settle(still, cp_sp, _cs(steering_torque=1.5, v_ego=8.0), frames=60)
@@ -344,7 +348,33 @@ def test_moving_planner_same_dir_subtracts_opposite_keeps_authority():
   opp = _run_moving_planner(cp_sp, 1.5, 8.0, -0.1, 60)
   assert same.angle_override >= 0.0                                      # never sign-flipped
   assert same.angle_override < still.angle_override                     # same-dir planner suppresses it
-  assert opp.angle_override == pytest.approx(still.angle_override, rel=0.01)  # opposite -> full authority
+  assert opp.angle_override == pytest.approx(still.angle_override, rel=0.01)  # opposite -> same settled target
+
+
+def test_moving_planner_opposite_grows_override_transient():
+  # dzid26's opposing-consume branch (503af9e/b67ee8f): while the override is still ramping
+  # (slew_step != 0), a planner moving OPPOSITE the override GROWS it -- the override pushes back
+  # against the planner, scaled by driver effort -- whereas a same-direction planner subtracts. The
+  # ordering opp > still > same holds throughout the transient window.
+  cp_sp = _cp_sp(coop=True)
+  frames = 10  # transient: the override has not settled yet
+  still = CoopSteeringCarController()
+  _settle(still, cp_sp, _cs(steering_torque=1.5, v_ego=8.0), frames=frames)
+  opp = _run_moving_planner(cp_sp, 1.5, 8.0, -0.1, frames)
+  same = _run_moving_planner(cp_sp, 1.5, 8.0, +0.1, frames)
+  assert opp.angle_override > still.angle_override > same.angle_override > 0.0
+
+
+def test_adjust_slew_for_planner_opposing_consume_magnitude():
+  # Exact magnitude of the opposing consume: for opposite-signed slew and planner step the slew grows
+  # by driver_effort * apply_angle_step, driver_effort = |override_torque| / STEER_OVERRIDE_TORQUE_RANGE.
+  slew, step, override_torque = 0.5, -0.2, 1.0   # opposite signs -> the opposing branch (direction < 0)
+  out = CoopSteeringCarController.adjust_slew_for_planner(slew, step, override_torque)
+  driver_effort = abs(override_torque) / STEER_OVERRIDE_TORQUE_RANGE
+  assert out == pytest.approx(slew - driver_effort * step)  # grows: 0.5 - 0.5*(-0.2) = 0.6
+  assert out > slew
+  # same-direction (both positive) subtracts the overlap instead of growing
+  assert CoopSteeringCarController.adjust_slew_for_planner(0.5, +0.2, override_torque) < 0.5
 
 
 def test_moving_planner_reversal_keeps_override_continuous():
