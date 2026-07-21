@@ -14,6 +14,8 @@ from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
+_GAP_ADJUST_BUTTON = {1: ButtonType.gapAdjustCruise}  # DAS "Gap adjust button" map; hoisted out of the per-frame update()
+
 
 class CarStateExt:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
@@ -72,10 +74,15 @@ class CarStateExt:
     # gas + scroll-wheel press combo -> gap/personality adjust (implements the DAS "Gap adjust button").
     # Scroll is on the party bus, so this is independent of the deprecated vehicle-bus infotainment path.
     gas_combo = ret.gasPressed and ret.genericToggle and ret.cruiseState.enabled
-    button_events += create_button_events(int(gas_combo), int(self.gas_combo_prev), {1: ButtonType.gapAdjustCruise})
+    button_events += create_button_events(int(gas_combo), int(self.gas_combo_prev), _GAP_ADJUST_BUTTON)
     self.gas_combo_prev = gas_combo
 
-    ret.buttonEvents = button_events
+    # APPEND to the base carstate's events (it already set ret.buttonEvents, e.g. the ACC cancel on
+    # DAS_accState->13, before calling us) -- never clobber, or the stock cancel/disengage path is lost.
+    # Materialize the base events first: they are readers into ret's own capnp storage, which the
+    # reassignment below reallocates (leaving stale readers -> garbage) if we don't copy them out.
+    base_events = [structs.CarState.ButtonEvent(pressed=be.pressed, type=be.type) for be in ret.buttonEvents]
+    ret.buttonEvents = base_events + button_events
 
   def update_coop_steering_sp(self, ret_sp: structs.CarStateSP) -> None:
     """Log the cooperative-steering inertia-FF internals to CarStateSP for telemetry. The FF is
