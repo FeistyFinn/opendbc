@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import StrEnum
 
-from opendbc.car import Bus, structs
+from opendbc.car import Bus, create_button_events, structs
 from opendbc.can.parser import CANParser
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.tesla.values import DBC, CANBUS
@@ -34,6 +34,8 @@ class CarStateExt:
     elif CP_SP.flags & TeslaFlagsSP.MADS_SCREEN_BUTTON_5_FINGER:
       self.mads_screen_button_fingers = 5
 
+    self.gas_combo_prev = False  # rising-edge tracking for the gas+scroll gap-adjust combo
+
   def mads_gesture_button_events(self, touch_points: int) -> list[structs.CarState.ButtonEvent]:
     """One lkas toggle per deliberate N-finger screen gesture, with hysteresis to reject touch-count
     jitter. Fires a single lkas press(+release) when the active touch-point count first reaches >= N
@@ -56,9 +58,10 @@ class CarStateExt:
     return []
 
   def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
+    button_events = []
     if self.CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
       cp_adas = can_parsers[Bus.adas]
-      ret.buttonEvents = self.mads_gesture_button_events(int(cp_adas.vl["UI_status2"]["UI_activeTouchPoints"]))
+      button_events += self.mads_gesture_button_events(int(cp_adas.vl["UI_status2"]["UI_activeTouchPoints"]))
 
     cp_party = can_parsers[Bus.party]
 
@@ -75,6 +78,14 @@ class CarStateExt:
         ret_sp.speedLimit = speed_limit * CV.MPH_TO_MS
 
     ret.genericToggle = cp_party.vl["UI_warning"]["scrollWheelPressed"] != 0
+
+    # gas + scroll-wheel press combo -> gap/personality adjust (implements the DAS "Gap adjust button").
+    # Scroll is on the party bus, so this is independent of the deprecated vehicle-bus infotainment path.
+    gas_combo = ret.gasPressed and ret.genericToggle and ret.cruiseState.enabled
+    button_events += create_button_events(int(gas_combo), int(self.gas_combo_prev), {1: ButtonType.gapAdjustCruise})
+    self.gas_combo_prev = gas_combo
+
+    ret.buttonEvents = button_events
 
   def update_coop_steering_sp(self, ret_sp: structs.CarStateSP) -> None:
     """Log the cooperative-steering inertia-FF internals to CarStateSP for telemetry. The FF is
