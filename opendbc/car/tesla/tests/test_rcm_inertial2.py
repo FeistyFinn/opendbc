@@ -17,7 +17,8 @@ def test_rcm_inertial2_val_enums():
   # fault flag. Guards the enum layout of the additive signal (there is no runtime consumer yet).
   dv = CANDefine(DBC).dv[RCM_INERTIAL2_ADDR]
   for axis in ("RCM_lateralAccel", "RCM_longitudinalAccel", "RCM_verticalAccel"):
-    assert dv[axis] == {32768: "SNA"}
+    # signed 16-bit (@1-): the airbag-ECU SNA pattern 0x8000 decodes to -32768, not 32768 (unreachable)
+    assert dv[axis] == {-32768: "SNA"}
     assert dv[axis + "QF"] == {0: "FAULTED", 1: "NOT_FAULTED"}
 
 
