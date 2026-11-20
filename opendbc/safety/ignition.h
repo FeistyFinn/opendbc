@@ -59,7 +59,7 @@ void ignition_can_hook(const CANPacket_t *msg) {
 
     static int prev_counter_tesla_gear = -1;
     if ((counter == ((prev_counter_tesla_gear + 1) % 16)) && (prev_counter_tesla_gear != -1)) {
-      int tesla_gear = (msg->data[2] >> 5) & 0x7;
+      int tesla_gear = (msg->data[2] >> 5) & 0x7U;
       if ((tesla_gear == 2) || (tesla_gear == 3) || (tesla_gear == 4)) {
         ignition_can = true;
       }
